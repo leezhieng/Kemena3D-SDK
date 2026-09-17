@@ -787,8 +787,17 @@ void main()
                 case kMaterialParamType::SAMPLER2D:
                     if (p.texture && paramTexUnit < shadowUnit)
                     {
-                        driver->bindTexture2D(paramTexUnit, p.texture->getTextureID());
-                        shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                        // Backends with fixed sampler registers (D3D11) report the unit
+                        // the sampler was compiled into; GL returns -1 and keeps picking
+                        // a free unit plus setting the sampler uniform (glUniform1i).
+                        int unit = driver->getTextureUnitForSampler(
+                            shader->getShaderProgram(), pn);
+                        if (unit < 0)
+                        {
+                            unit = paramTexUnit;
+                            shader->setValue(pn, unit); // sampler units use glUniform1i
+                        }
+                        driver->bindTexture2D(unit, p.texture->getTextureID());
                         shader->setValue("has_" + pn, true);
                         paramTexUnit++;
                     }
@@ -796,8 +805,14 @@ void main()
                 case kMaterialParamType::SAMPLERCUBE:
                     if (p.texture && paramTexUnit < shadowUnit)
                     {
-                        driver->bindTextureCube(paramTexUnit, p.texture->getTextureID());
-                        shader->setValue(pn, (int)paramTexUnit); // sampler units must use glUniform1i
+                        int unit = driver->getTextureUnitForSampler(
+                            shader->getShaderProgram(), pn);
+                        if (unit < 0)
+                        {
+                            unit = paramTexUnit;
+                            shader->setValue(pn, unit); // sampler units use glUniform1i
+                        }
+                        driver->bindTextureCube(unit, p.texture->getTextureID());
                         shader->setValue("has_" + pn, true);
                         paramTexUnit++;
                     }

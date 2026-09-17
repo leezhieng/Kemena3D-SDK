@@ -256,7 +256,66 @@ namespace kemena
 
         glDeleteShader(vertShader);
         glDeleteShader(fragShader);
+
+        // Reflect the program's uniforms into a table, the way the DirectX backend
+        // does: uniform lookup becomes a table query instead of one GL call per
+        // name, and both backends resolve identical name paths.
+        {
+            const GLuint pid = program;
+            GLint uniformCount = 0;
+            glGetProgramiv(pid, GL_ACTIVE_UNIFORMS, &uniformCount);
+
+            auto &table = uniformTable[static_cast<uint32_t>(pid)];
+            for (GLint i = 0; i < uniformCount; ++i)
+            {
+                char    nameBuf[256] = {};
+                GLsizei nameLen = 0;
+                GLint   arraySize = 0;
+                GLenum  type = 0;
+
+                glGetActiveUniform(pid, static_cast<GLuint>(i),
+                                   static_cast<GLsizei>(sizeof(nameBuf)), &nameLen,
+                                   &arraySize, &type, nameBuf);
+                if (nameLen <= 0)
+                    continue;
+
+                const kString name(nameBuf, static_cast<size_t>(nameLen));
+                table[name] = glGetUniformLocation(pid, name.c_str());
+
+                // Arrays are reported as "name[0]"; enumerate the remaining
+                // elements so paths like "u_Tiling[2]" hit the table as well.
+                const size_t bracket = name.rfind("[0]");
+                if (bracket != kString::npos && bracket + 3 == name.size() && arraySize > 1)
+                {
+                    const kString base = name.substr(0, bracket);
+                    for (GLint element = 0; element < arraySize; ++element)
+                    {
+                        const kString elementName =
+                            base + "[" + std::to_string(element) + "]";
+                        table[elementName] = glGetUniformLocation(pid, elementName.c_str());
+                    }
+                }
+            }
+        }
+
         return static_cast<uint32_t>(program);
+    }
+
+    GLint kOpenGLDriver::resolveUniformLocation(uint32_t progId, const kString &name)
+    {
+        auto progIt = uniformTable.find(progId);
+        if (progIt != uniformTable.end())
+        {
+            auto it = progIt->second.find(name);
+            if (it != progIt->second.end())
+                return it->second;
+        }
+
+        // Unknown to the reflection table (or no table for this program): ask GL
+        // directly, then remember the answer.
+        const GLint location = glGetUniformLocation(static_cast<GLuint>(progId), name.c_str());
+        uniformTable[progId][name] = location;
+        return location;
     }
 
     uint32_t kOpenGLDriver::compileShaderProgramSpirv(const std::vector<uint8_t> &vertSpirv,
@@ -340,6 +399,7 @@ namespace kemena
             glDeleteShader(vertShader);
             glDeleteShader(fragShader);
             glDeleteProgram(program);
+            uniformTable.erase(static_cast<uint32_t>(program));
             return 0;
         }
 
@@ -350,6 +410,11 @@ namespace kemena
 
     void kOpenGLDriver::deleteShaderProgram(uint32_t id)
     {
+        // Drop the reflected uniform table along with the program: GL reuses
+        // program names, so a stale table would hand out locations from the
+        // deleted program.
+        uniformTable.erase(id);
+
         if (id)
             glDeleteProgram(static_cast<GLuint>(id));
     }
@@ -366,47 +431,47 @@ namespace kemena
 
     void kOpenGLDriver::setUniformBool(uint32_t progId, const kString &name, bool v)
     {
-        glUniform1i(glGetUniformLocation(progId, name.c_str()), static_cast<int>(v));
+        glUniform1i(resolveUniformLocation(progId, name), static_cast<int>(v));
     }
 
     void kOpenGLDriver::setUniformInt(uint32_t progId, const kString &name, int v)
     {
-        glUniform1i(glGetUniformLocation(progId, name.c_str()), v);
+        glUniform1i(resolveUniformLocation(progId, name), v);
     }
 
     void kOpenGLDriver::setUniformUint(uint32_t progId, const kString &name, uint32_t v)
     {
-        glUniform1ui(glGetUniformLocation(progId, name.c_str()), v);
+        glUniform1ui(resolveUniformLocation(progId, name), v);
     }
 
     void kOpenGLDriver::setUniformFloat(uint32_t progId, const kString &name, float v)
     {
-        glUniform1f(glGetUniformLocation(progId, name.c_str()), v);
+        glUniform1f(resolveUniformLocation(progId, name), v);
     }
 
     void kOpenGLDriver::setUniformVec2(uint32_t progId, const kString &name, const kVec2 &v)
     {
-        glUniform2fv(glGetUniformLocation(progId, name.c_str()), 1, glm::value_ptr(v));
+        glUniform2fv(resolveUniformLocation(progId, name), 1, glm::value_ptr(v));
     }
 
     void kOpenGLDriver::setUniformVec3(uint32_t progId, const kString &name, const kVec3 &v)
     {
-        glUniform3fv(glGetUniformLocation(progId, name.c_str()), 1, glm::value_ptr(v));
+        glUniform3fv(resolveUniformLocation(progId, name), 1, glm::value_ptr(v));
     }
 
     void kOpenGLDriver::setUniformVec4(uint32_t progId, const kString &name, const kVec4 &v)
     {
-        glUniform4fv(glGetUniformLocation(progId, name.c_str()), 1, glm::value_ptr(v));
+        glUniform4fv(resolveUniformLocation(progId, name), 1, glm::value_ptr(v));
     }
 
     void kOpenGLDriver::setUniformMat4(uint32_t progId, const kString &name, const kMat4 &v)
     {
-        glUniformMatrix4fv(glGetUniformLocation(progId, name.c_str()), 1, GL_FALSE, glm::value_ptr(v));
+        glUniformMatrix4fv(resolveUniformLocation(progId, name), 1, GL_FALSE, glm::value_ptr(v));
     }
 
     void kOpenGLDriver::setUniformMat4Array(uint32_t progId, const kString &name, const std::vector<kMat4> &v)
     {
-        glUniformMatrix4fv(glGetUniformLocation(progId, name.c_str()),
+        glUniformMatrix4fv(resolveUniformLocation(progId, name),
                            static_cast<GLsizei>(v.size()), GL_FALSE, glm::value_ptr(v[0]));
     }
 

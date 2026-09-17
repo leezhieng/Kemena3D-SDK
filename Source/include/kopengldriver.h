@@ -27,6 +27,7 @@
 
 #include <iostream>
 #include <vector>
+#include <unordered_map>
 
 namespace kemena
 {
@@ -538,6 +539,24 @@ namespace kemena
 
     private:
         SDL_GLContext glContext = nullptr; ///< The SDL-managed OpenGL context.
+
+        /// Per-program reflected uniform table (uniform path → location).
+        ///
+        /// Mirrors the DirectX backend, where a uniform can only be addressed
+        /// through a reflected table because HLSL constant buffers expose no
+        /// per-uniform location.  Filling it from glGetActiveUniform makes both
+        /// backends resolve the same name paths ("material.diffuse",
+        /// "u_Tiling[2]", "sunLights[3].position") in the same way.
+        std::unordered_map<uint32_t, std::unordered_map<kString, GLint>> uniformTable;
+
+        /**
+         * @brief Resolves a uniform path to its location inside a program.
+         *
+         * Queries the reflected table first and falls back to
+         * glGetUniformLocation() (caching the answer), so names the reflection did
+         * not enumerate behave exactly as before.
+         */
+        GLint resolveUniformLocation(uint32_t progId, const kString &name);
 
         /** @brief Converts a kBlendFactor to the corresponding GL enum. */
         GLenum toGLBlendFactor(kBlendFactor factor);

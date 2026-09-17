@@ -91,9 +91,29 @@ namespace kemena
 
         // --- DirectX 11 (HLSL / DXBC) ----------------------------------------
 
-        /** Placeholder: load a combined HLSL source file for a DirectX 11 backend. */
+        /**
+         * @brief Loads a combined HLSL source file for the DirectX 11 backend.
+         *
+         * The engine does not translate shader source, so an application that runs
+         * on D3D11 supplies HLSL here and GLSL through loadGlsl*() for the OpenGL
+         * backends.  Sections use the same markers as splitSource():
+         * @code
+         *   // --- VERTEX ---       // VSMain (vs_5_0)
+         *   // --- FRAGMENT ---     // PSMain (ps_5_0)
+         * @endcode
+         * Either section may be omitted; a source without markers is treated as a
+         * single stage, or as a file holding both entry points when it declares
+         * both VSMain and PSMain (the file is then compiled once per stage).
+         *
+         * A vertex shader must declare its inputs with the semantics used by the
+         * D3D11 driver (location 0 = POSITION, 1 = COLOR, 2 = TEXCOORD, 3 = NORMAL,
+         * 4 = TANGENT, 5 = BINORMAL, 6 = BLENDINDICES, 7 = BLENDWEIGHT), and
+         * uniforms must live in a constant buffer so they can be set through
+         * setValue().
+         */
         void loadHlslFileDX11(const kString& path);
-        /** Placeholder: load a combined HLSL source string for a DirectX 11 backend. */
+
+        /** @brief Loads a combined HLSL source string (see loadHlslFileDX11()). */
         void loadHlslCodeDX11(const kString& src);
 
         // --- DirectX 12 (HLSL / DXIL via DXC) --------------------------------

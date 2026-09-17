@@ -194,14 +194,37 @@ namespace kemena
 
     void kShader::loadHlslCodeDX11(const kString& src)
     {
-        // Split the combined HLSL source using the same markers as GLSL
+        // HLSL is handed to the driver untouched — the engine never translates
+        // shader source.  The D3D11 driver compiles vs_5_0 / ps_5_0 with the entry
+        // points VSMain / PSMain ("main" as a fallback).
         kShaderSource s = splitSource(src);
 
-        // For HLSL, the "vertex" section contains the VS entry (VSMain),
-        // and "fragment" section contains the PS entry (PSMain).
-        // The source is passed directly to the driver's compileShaderProgram,
-        // which for D3D11 will compile as HLSL with vs_5_0 / ps_5_0 targets
-        // and VSMain / PSMain entry points.
+        // splitSource() reports a marker-less source as fragment-only.  For HLSL
+        // the stage can be inferred from the entry point instead, which is what
+        // makes a plain, single-file HLSL shader usable here:
+        //   * VSMain and PSMain present -> the same source is compiled twice, and
+        //     each compile picks the entry point for its stage;
+        //   * only VSMain             -> vertex stage only;
+        //   * otherwise               -> fragment stage only.
+        if (s.vertex.empty() && !s.fragment.empty())
+        {
+            const bool hasVsEntry = s.fragment.find("VSMain") != kString::npos;
+            const bool hasPsEntry = s.fragment.find("PSMain") != kString::npos;
+
+            if (hasVsEntry && hasPsEntry)
+            {
+                shaderProgram = kDriver::getCurrent()->compileShaderProgram(
+                    s.fragment.c_str(), s.fragment.c_str());
+                return;
+            }
+            if (hasVsEntry)
+            {
+                shaderProgram = kDriver::getCurrent()->compileShaderProgram(
+                    s.fragment.c_str(), nullptr);
+                return;
+            }
+        }
+
         shaderProgram = kDriver::getCurrent()->compileShaderProgram(
             s.vertex.empty()   ? nullptr : s.vertex.c_str(),
             s.fragment.empty() ? nullptr : s.fragment.c_str());

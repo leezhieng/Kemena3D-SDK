@@ -1050,24 +1050,59 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
 		return shader;
 	}
 
-	   kShader *kAssetManager::loadGlslFromResource(kString resourceName)
+	   /// @brief Reads a text resource (RCDATA on Windows, Resources/<name> elsewhere).
+	   static bool readTextResource(const kString &resourceName, kString &out)
 	   {
-	       kString src;
-
 #ifdef _WIN32
 	       HRSRC hRes = FindResource(NULL, resourceName.c_str(), RT_RCDATA);
-	       if (!hRes) return nullptr;
+	       if (!hRes) return false;
 	       HGLOBAL hData = LoadResource(NULL, hRes);
-	       if (!hData) return nullptr;
+	       if (!hData) return false;
 	       DWORD  size = SizeofResource(NULL, hRes);
 	       void  *data = LockResource(hData);
-	       if (!data || size == 0) return nullptr;
-	       src = kString(reinterpret_cast<const char *>(data), static_cast<size_t>(size));
+	       if (!data || size == 0) return false;
+	       out = kString(reinterpret_cast<const char *>(data), static_cast<size_t>(size));
+	       return true;
 #else
 	       std::vector<char> buf;
-	       if (!readResourceFile(resourceName, buf)) return nullptr;
-	       src = kString(buf.data(), buf.size());
+	       if (!readResourceFile(resourceName, buf)) return false;
+	       out = kString(buf.data(), buf.size());
+	       return true;
 #endif
+	   }
+
+	   kShader *kAssetManager::loadGlslFromResource(kString resourceName)
+	   {
+#ifdef KEMENA_D3D11
+	       // Shader source is never translated by the engine: each backend loads its
+	       // own variant of the shader.  When the active renderer is DirectX 11 the
+	       // <NAME>_HLSL resource is used, and the GLSL entry is only a fallback for
+	       // shaders that have no HLSL counterpart yet.  The whole branch is compiled
+	       // out of non-D3D11 builds, so OpenGL behaviour is unchanged.
+	       kDriver *activeDriver = kDriver::getCurrent();
+	       if (activeDriver != nullptr &&
+	           activeDriver->getRendererType() == kRendererType::RENDERER_D3D11)
+	       {
+	           kString hlslSrc;
+	           const kString hlslName = resourceName + "_HLSL";
+	           if (readTextResource(hlslName, hlslSrc) && !hlslSrc.empty())
+	           {
+	               kShader *shader = new kShader();
+	               shader->loadHlslCodeDX11(hlslSrc);
+	               shaders.push_back(shader);
+	               return shader;
+	           }
+
+	           std::cout << "[kAssetManager] No HLSL variant for resource '" << resourceName
+	                     << "' (expected '" << hlslName
+	                     << "'); falling back to the GLSL source, which the D3D11 "
+	                        "backend cannot compile." << std::endl;
+	       }
+#endif
+
+	       kString src;
+	       if (!readTextResource(resourceName, src))
+	           return nullptr;
 
 	       kShader *shader = new kShader();
 	       shader->loadGlslCode(src);

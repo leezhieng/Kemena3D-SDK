@@ -38,12 +38,43 @@ namespace kemena
     // Internal data structures
     // -------------------------------------------------------------------------
 
+    /** @brief Kind of a reflected HLSL type, used to emulate cbuffer packing. */
+    enum class D3D11TypeKind
+    {
+        Scalar,
+        Vector,
+        Matrix,
+        Struct,
+        Other
+    };
+
+    /**
+     * @brief Compact copy of a reflected HLSL type.
+     *
+     * D3D11 reflection only exposes the top-level variables of a constant buffer,
+     * while the engine addresses uniforms the way GL does — @c "material.diffuse",
+     * @c "sunLights[3].position", @c "u_Tiling[1]".  This tree is captured once at
+     * compile time so those paths can be resolved to a byte offset.  Member offsets
+     * are not reported by D3DReflect, so they are recomputed with HLSL constant
+     * buffer packing rules (see kDX11Driver::resolveUniformPath()).
+     */
+    struct D3D11TypeInfo
+    {
+        D3D11TypeKind kind = D3D11TypeKind::Other;
+        uint32_t      rows = 1;         ///< Vector/matrix rows.
+        uint32_t      columns = 1;      ///< Vector/matrix columns.
+        uint32_t      elements = 0;     ///< Array length (0 = not an array).
+        std::vector<kString>         memberNames;
+        std::vector<D3D11TypeInfo>   memberTypes;
+    };
+
     /** @brief Describes a single uniform variable inside a constant buffer. */
     struct D3D11UniformInfo
     {
         uint32_t cbSlot;    ///< Constant buffer register slot (b0, b1, ...).
         uint32_t offset;    ///< Byte offset within the constant buffer.
         uint32_t size;      ///< Size in bytes (must be ≤ 16 for a single vec4/mat4 row).
+        D3D11TypeInfo type; ///< Reflected type, for member/index path resolution.
     };
 
     /** @brief Holds all GPU objects for one compiled shader program. */
@@ -55,6 +86,11 @@ namespace kemena
 
         /// Maps uniform name → constant-buffer slot + offset.
         std::unordered_map<kString, D3D11UniformInfo> uniforms;
+
+        /// Maps sampler name → texture/sampler register (t#, s#) it was compiled
+        /// into.  HLSL registers are fixed at compile time, unlike GL's dynamic
+        /// texture units.
+        std::unordered_map<kString, uint32_t> samplers;
 
         /// Per-slot constant buffers (created lazily, sized to the largest needed).
         std::unordered_map<uint32_t, ID3D11Buffer *> constantBuffers;
@@ -69,6 +105,19 @@ namespace kemena
         /// needs uploading before the next draw call.
         std::unordered_map<uint32_t, bool> cbDirty;
 
+        /// Vertex-shader byte code, kept alive after compilation so that input
+        /// layouts can be created lazily from the shader's input signature
+        /// (D3D11 requires the VS signature to build a layout).
+        ID3DBlob *vsBlob = nullptr;
+
+        D3D11ProgramData() = default;
+        // The struct owns COM pointers, so copies are forbidden and the moves
+        // must be written by hand — an implicitly generated move would leave the
+        // source holding the same pointers and double-release them.
+        D3D11ProgramData(const D3D11ProgramData &) = delete;
+        D3D11ProgramData &operator=(const D3D11ProgramData &) = delete;
+        D3D11ProgramData(D3D11ProgramData &&other) noexcept;
+        D3D11ProgramData &operator=(D3D11ProgramData &&other) noexcept;
         ~D3D11ProgramData();
     };
 
@@ -77,22 +126,35 @@ namespace kemena
     {
         int   location;
         int   components;   ///< 1–4
-        int   stride;
+        int   stride;       ///< 0 = tightly packed (GL semantics)
         size_t offset;
         bool  isInteger;
+
+        /// Index into D3D11VertexArrayData::vertexBuffers that this attribute
+        /// reads from.  The GL backend derives it from the currently bound
+        /// GL_ARRAY_BUFFER, so each attribute may live in its own buffer.
+        uint32_t slot = 0;
+
+        /// Vertex attribute divisor (0 = per vertex, 1 = per instance).
+        uint32_t divisor = 0;
     };
 
     /** @brief Holds vertex/index buffer bindings and input layout for one VAO. */
     struct D3D11VertexArrayData
     {
         ID3D11InputLayout *inputLayout = nullptr;
+        /// Program the cached inputLayout was built for (layouts are
+        /// signature-specific, so they must be rebuilt when the shader changes).
+        uint32_t           inputLayoutProgram = 0;
+
+        /// Index buffer — owned (AddRef'd) by this VAO.
         ID3D11Buffer      *indexBuffer = nullptr;
         DXGI_FORMAT        indexFormat = DXGI_FORMAT_R32_UINT;
         uint32_t           indexCount  = 0;
 
         struct VB binding
         {
-            ID3D11Buffer *buffer = nullptr;
+            ID3D11Buffer *buffer = nullptr;   ///< Owned (AddRef'd) by this VAO.
             uint32_t      stride = 0;
             uint32_t      offset = 0;
         };
@@ -114,6 +176,7 @@ namespace kemena
         int                       layers  = 1;  ///< >1 for texture arrays
         bool                      isCube  = false;
         bool                      isDepth = false;
+        bool                      mips    = false; ///< Auto-generated mip chain present.
     };
 
     /** @brief Holds FBO colour + depth attachments. */
@@ -157,11 +220,23 @@ namespace kemena
         void *getNativeContext() override;
         kString getApiVersion() override;
         kString getShaderVersion() override;
+        kRendererType getRendererType() const override;
         void swapBuffers() override;
+        void resizeSwapChain(int width, int height) override;
         void *getImTextureID(uint32_t id) override;
 
         /** @brief Returns the D3D11 device context (needed by ImGui DX11 backend). */
         ID3D11DeviceContext *getDeviceContext() { return d3dContext; }
+
+        /**
+         * @brief Returns the texture unit a sampler was compiled to.
+         *
+         * HLSL sampler registers are fixed at compile time (t0, t1, …), so callers
+         * must bind textures to the register the shader actually samples.  Returns
+         * -1 when the program or the sampler is unknown, which tells the caller to
+         * fall back to a free unit (the OpenGL behaviour).
+         */
+        int getTextureUnitForSampler(uint32_t progId, const kString &name) override;
 
         // --- Frame state -----------------------------------------------------
         void setClearColor(float r, float g, float b, float a) override;
@@ -182,6 +257,19 @@ namespace kemena
         void setWireframe(bool enable) override;
 
         // --- Shader programs -------------------------------------------------
+
+        /**
+         * @brief Compiles a shader program from user-supplied source.
+         *
+         * Sources are not translated by the engine, so which language to pass
+         * depends on the active backend: GLSL for kOpenGLDriver / kOpenGLESDriver,
+         * HLSL for this backend (compiled with D3DCompile as vs_5_0 / ps_5_0 using
+         * the entry points @c VSMain and @c PSMain, falling back to @c main).
+         *
+         * See kShader::loadHlslCodeDX11() / kShader::loadHlslFileDX11() for the
+         * HLSL entry points.  A user vertex shader must declare its inputs with
+         * the semantic names produced by kDX11Driver::attribSemantic().
+         */
         uint32_t compileShaderProgram(const char *vertSrc, const char *fragSrc) override;
         uint32_t compileShaderProgramSpirv(const std::vector<uint8_t> &vertSpirv,
                                            const kString &vertEntry,
@@ -300,12 +388,26 @@ namespace kemena
         D3D_FEATURE_LEVEL    featureLevel     = D3D_FEATURE_LEVEL_11_0;
         float                clearColor[4]    = {0.0f, 0.0f, 0.0f, 1.0f};
 
+        /// Current back-buffer size, used to skip redundant ResizeBuffers calls.
+        int                  swapChainWidth   = 0;
+        int                  swapChainHeight  = 0;
+
+        /// Set once the device reports DEVICE_REMOVED/RESET, so the failure is
+        /// logged a single time instead of every frame.
+        bool                 deviceRemoved    = false;
+
         // --- Resource maps ---------------------------------------------------
         std::unordered_map<uint32_t, D3D11ProgramData>    programs;
         std::unordered_map<uint32_t, D3D11VertexArrayData> vertexArrays;
         std::unordered_map<uint32_t, ID3D11Buffer *>       buffers;
         std::unordered_map<uint32_t, D3D11TextureData>     textures;
         std::unordered_map<uint32_t, D3D11FramebufferData> framebuffers;
+
+        /// CPU-side copy of every buffer uploaded through uploadVertexBuffer /
+        /// uploadIndexBuffer.  IMMUTABLE buffers cannot be mapped, and mapping a
+        /// DYNAMIC buffer with WRITE_DISCARD wipes the untouched regions, so
+        /// sub-data updates patch this copy and re-upload it in full.
+        std::unordered_map<uint32_t, std::vector<uint8_t>> bufferShadows;
 
         // --- ID allocators ---------------------------------------------------
         uint32_t nextProgramId    = 1;
@@ -340,7 +442,13 @@ namespace kemena
         uint32_t            currentVAO      = 0;
         ID3D11RenderTargetView *currentRTVs[8] = {};
         ID3D11DepthStencilView *currentDSV      = nullptr;
-        uint32_t            currentFBO      = 0;  ///< 0 = back buffer
+        uint32_t            currentFBO      = 0;  ///< Active draw target (0 = back buffer)
+        uint32_t            currentReadFBO  = 0;  ///< Source of blitFramebufferColor()
+
+        /// Buffer most recently passed to uploadVertexBuffer()/updateBufferSubData().
+        /// Equivalent to GL's currently bound GL_ARRAY_BUFFER: the following
+        /// setVertexAttrib*() call binds its attributes to this buffer.
+        uint32_t            currentArrayBufferId = 0;
 
         // --- Bound textures per slot -----------------------------------------
         struct BoundTexture
@@ -360,6 +468,15 @@ namespace kemena
         /** Creates or re-creates the back-buffer RTV + DSV from the swap chain. */
         bool createBackBufferResources();
 
+        /** Binds index/vertex buffers plus the input layout for a VAO. */
+        void bindVAOState(D3D11VertexArrayData &va);
+
+        /** Re-points every VAO reference from one GPU buffer to another. */
+        void retargetVAOBuffers(ID3D11Buffer *oldBuf, ID3D11Buffer *newBuf);
+
+        /** Maps a GL attribute location to a D3D11 input semantic. */
+        static void attribSemantic(int location, const char *&name, UINT &index);
+
         /** Releases the back-buffer RTV and DSV. */
         void releaseBackBufferResources();
 
@@ -370,6 +487,44 @@ namespace kemena
         /** Reflects on a compiled shader to discover constant buffer variables. */
         void reflectConstantBuffers(ID3DBlob *vsBlob, ID3DBlob *psBlob,
                                     D3D11ProgramData &prog);
+
+        /**
+         * @brief Writes a value into a program's constant-buffer shadow.
+         *
+         * The name may be a flat uniform, a struct member or an array element
+         * ("material.diffuse", "u_Tiling[2]", "sunLights[3].position"); the path is
+         * resolved with resolveUniformPath().  Unknown paths are ignored, which is
+         * how optional uniforms (a shader that does not declare a given parameter)
+         * are handled.
+         */
+        void writeUniform(D3D11ProgramData &prog, const kString &name,
+                          const void *data, size_t size);
+
+        /**
+         * @brief Resolves a uniform path to a constant-buffer slot and byte range.
+         *
+         * Implements the engine-wide uniform naming convention — the one the
+         * DirectX backend requires because HLSL packs uniforms into constant
+         * buffers rather than exposing one location per uniform:
+         *   * flat top-level variables:  "viewMatrix"
+         *   * struct members:            "material.diffuse"
+         *   * array elements:            "u_Tiling[2]", "finalBoneMatrices[7]"
+         *   * combinations:              "sunLights[3].position"
+         * Members and elements are resolved against the reflected type tree, with
+         * HLSL constant-buffer packing rules applied to compute their offsets.
+         *
+         * @return false when the path does not exist in this program.
+         */
+        static bool resolveUniformPath(D3D11ProgramData &prog, const kString &name,
+                                       uint32_t &outCbSlot, uint32_t &outOffset,
+                                       uint32_t &outSize);
+
+        /** Packed size in bytes of one element of the given reflected type. */
+        static uint32_t packedTypeSize(const D3D11TypeInfo &type);
+
+        /** Byte offset (and size) of a struct member, per HLSL cbuffer packing. */
+        static uint32_t memberOffset(const D3D11TypeInfo &type, size_t index,
+                                     uint32_t &outSize);
 
         /** Creates an input layout from vertex shader reflection + attribute descriptors. */
         ID3D11InputLayout *createInputLayout(ID3DBlob *vsBlob,

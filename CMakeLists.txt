@@ -249,6 +249,15 @@ option(KEMENA_D3D11 "Build with DirectX 11 backend (Windows only)" OFF)
 if(KEMENA_D3D11)
     if(WIN32)
         target_compile_definitions(kemena3d PUBLIC KEMENA_D3D11)
+        # kdx11driver.h includes <windows.h> and <d3d11.h>, so every consumer of
+        # that header needs NOMINMAX and WIN32_LEAN_AND_MEAN defined *before* any
+        # Windows header is pulled in — otherwise the min/max macros leak and
+        # break std::min/std::max in translation units that include the STL after
+        # them (observed in krenderer.cpp / koffscreenrenderer.cpp as soon as
+        # KEMENA_D3D11 is enabled).  PUBLIC so the studio and runtime targets
+        # inherit them, and only for this backend so OpenGL builds keep exactly
+        # the definitions they had before.
+        target_compile_definitions(kemena3d PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
         message(STATUS "Kemena3D SDK: DirectX 11 backend enabled")
     else()
         message(WARNING "KEMENA_D3D11 is only supported on Windows — disabling")

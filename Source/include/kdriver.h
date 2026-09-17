@@ -129,6 +129,19 @@ namespace kemena
          */
         virtual kString getShaderVersion() = 0;
 
+        /**
+         * @brief Identifies which renderer type this driver implements.
+         *
+         * Default implementation reports @c RENDERER_GL, which also describes the
+         * OpenGL ES backend for asset-selection purposes (both compile GLSL).  The
+         * DirectX backends override it so callers can pick a backend-specific asset
+         * variant — for example loading a .hlsl shader instead of its .glsl
+         * counterpart.  Behaviour of the existing backends is unaffected.
+         *
+         * @return kRendererType of this driver.
+         */
+        virtual kRendererType getRendererType() const { return kRendererType::RENDERER_GL; }
+
         // --- Frame state -----------------------------------------------------
 
         /**
@@ -237,9 +250,15 @@ namespace kemena
         // --- Shader programs -------------------------------------------------
 
         /**
-         * @brief Compiles and links a vertex + fragment shader pair from GLSL source.
-         * @param vertSrc GLSL vertex shader source kString, or nullptr to skip.
-         * @param fragSrc GLSL fragment shader source kString, or nullptr to skip.
+         * @brief Compiles and links a vertex + fragment shader pair from source.
+         *
+         * The source language is the one the active backend compiles and is never
+         * translated: GLSL for kOpenGLDriver / kOpenGLESDriver, HLSL for the
+         * DirectX 11 backend.  Callers therefore supply whichever language matches
+         * the backend they are running on (see kShader's per-API loaders).
+         *
+         * @param vertSrc Vertex shader source, or nullptr to skip the stage.
+         * @param fragSrc Fragment shader source, or nullptr to skip the stage.
          * @return Opaque program handle (0 on failure).
          */
         virtual uint32_t compileShaderProgram(const char *vertSrc, const char *fragSrc) = 0;
@@ -784,6 +803,27 @@ namespace kemena
          */
         virtual void *getImTextureID(uint32_t id) { return reinterpret_cast<void *>(static_cast<intptr_t>(id)); }
 
+        /**
+         * @brief Returns the texture unit a sampler is bound to for a program.
+         *
+         * Backends whose sampler registers are fixed at compile time (DirectX)
+         * return the register the sampler was compiled into, so the caller binds
+         * the texture to that unit.  Backends that assign units dynamically
+         * (OpenGL, OpenGL ES) return -1, meaning "pick a free unit and set the
+         * sampler uniform yourself" — their behaviour is unchanged.
+         *
+         * @param progId Program handle returned by compileShaderProgram().
+         * @param name   Sampler/uniform name as written in the shader.
+         * @return Texture unit to bind to, or -1 if the backend assigns units
+         *         dynamically (or the sampler is unknown).
+         */
+        virtual int getTextureUnitForSampler(uint32_t progId, const kString &name)
+        {
+            (void)progId;
+            (void)name;
+            return -1;
+        }
+
         // --- Swap buffers ----------------------------------------------------
 
         /**
@@ -794,6 +834,24 @@ namespace kemena
          * the window's SDL_GL_SwapWindow instead.
          */
         virtual void swapBuffers() {}
+
+        /**
+         * @brief Resizes the backend's swap chain / default framebuffer.
+         *
+         * Default implementation is a no-op: the OpenGL backends draw straight
+         * into the window's default framebuffer, which SDL resizes on their
+         * behalf, so no resource has to be recreated.  Backends owning a swap
+         * chain (DirectX, Vulkan) override this.  Implementations must ignore
+         * non-positive sizes and sizes equal to the current one.
+         *
+         * @param width  New backing-buffer width in pixels.
+         * @param height New backing-buffer height in pixels.
+         */
+        virtual void resizeSwapChain(int width, int height)
+        {
+            (void)width;
+            (void)height;
+        }
 
     private:
         static kDriver *s_current; ///< Globally active driver instance.

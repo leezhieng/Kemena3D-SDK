@@ -58,6 +58,31 @@ namespace kemena
     KEMENA3D_API kRenderer *createRenderer(kWindow *window);
 
     /**
+     * @brief Returns the renderer type createRenderer() uses by default.
+     *
+     * The backend is a build-time choice: a build configured with KEMENA_D3D11
+     * creates DirectX 11 renderers — and then loads the HLSL shader variants —
+     * while every other configuration creates OpenGL renderers, which also covers
+     * the OpenGL ES targets.  createWindow() matches the window to this type, so a
+     * DirectX swap chain is never created on a window carrying SDL's OpenGL flag.
+     *
+     * @return kRendererType new renderers are created with.
+     */
+    KEMENA3D_API kRendererType defaultRendererType();
+
+    /**
+     * @brief Create and initialise a renderer of an explicit type.
+     *
+     * Only the backends compiled into the SDK are available; requesting one that
+     * was not built fails and returns nullptr.
+     *
+     * @param window The window the renderer will draw into.
+     * @param type   Backend to initialise.
+     * @return Pointer to the initialised kRenderer, or nullptr on failure.
+     */
+    KEMENA3D_API kRenderer *createRenderer(kWindow *window, kRendererType type);
+
+    /**
      * @brief Create a new asset manager.
      * @return Pointer to a newly allocated kAssetManager.
      */
