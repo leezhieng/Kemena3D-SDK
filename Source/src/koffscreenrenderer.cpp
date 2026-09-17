@@ -1,5 +1,11 @@
 #include "koffscreenrenderer.h"
+// Only the abstract kDriver interface and raw GL entry points are used here;
+// the concrete desktop driver is never referenced.  Its header is skipped on
+// ES platforms, where <GL/glew.h> does not exist.  kgl_internal.h resolves the
+// correct GL header set (GLEW on desktop, GLES3/gl3.h on mobile).
+#ifndef KEMENA_GLES
 #include "kopengldriver.h"
+#endif
 #include "kgl_internal.h"
 #include "kdriver.h"
 #include "kmesh.h"

@@ -579,6 +579,83 @@ namespace kemena
         for (kObject *obj : characterBodies)
             if (obj->getCharacterController())
                 obj->syncFromCharacter();
+
+        // Fire OnCollision*/OnTrigger* events captured during the step.
+        dispatchPhysicsContactEvents(physicsManager, physicsBodies, characterBodies);
+    }
+
+    // -----------------------------------------------------------------------
+    // Physics contact -> script event dispatch
+    // -----------------------------------------------------------------------
+
+    void kWorld::dispatchPhysicsContactEvents(kPhysicsManager *pm,
+                                              const std::vector<kObject *> &bodyNodes,
+                                              const std::vector<kObject *> &charNodes)
+    {
+        if (!pm || !scriptManager || !scriptsRunning)
+            return;
+
+        std::vector<kPhysicsContactEvent> events = pm->takeContactEvents();
+        if (events.empty())
+            return;
+
+        // Map live Jolt body ids back to the scene nodes that own them.
+        std::map<uint32_t, kObject *> owner;
+        for (kObject *n : bodyNodes)
+            if (n && n->getPhysicsObject())
+                owner[n->getPhysicsObject()->getBodyId()] = n;
+        for (kObject *n : charNodes)
+            if (n && n->getCharacterController())
+                owner[n->getCharacterController()->getBodyId()] = n;
+        if (owner.empty())
+            return;
+
+        // Fires a collision/trigger event on @p obj, passing @p other (the
+        // counterpart in the contact/overlap) as the function's kObject@ other.
+        auto dispatchTo = [&](kObject *obj, kScriptEvent evt, kObject *other)
+        {
+            if (!obj || !obj->getActive())
+                return;
+            for (kScript &comp : obj->getScripts())
+            {
+                if (!comp.isActive)
+                    continue;
+                kScriptInstance *inst = scriptManager->getInstance(comp.uuid);
+                if (!inst || !inst->valid)
+                    continue;
+                scriptManager->setActiveObject(obj);
+                scriptManager->callEventWithObject(inst, evt, other);
+            }
+        };
+
+        for (const kPhysicsContactEvent &ev : events)
+        {
+            auto itA = owner.find(ev.bodyA);
+            auto itB = owner.find(ev.bodyB);
+            kObject *objA = (itA != owner.end()) ? itA->second : nullptr;
+            kObject *objB = (itB != owner.end()) ? itB->second : nullptr;
+            if (!objA && !objB)
+                continue;
+
+            kScriptEvent evt;
+            if (ev.isTrigger)
+            {
+                evt = ev.action == kPhysicsContactEvent::Action::Enter ? K_SCRIPT_ON_TRIGGER_ENTER
+                    : ev.action == kPhysicsContactEvent::Action::Stay  ? K_SCRIPT_ON_TRIGGER_STAY
+                    : K_SCRIPT_ON_TRIGGER_EXIT;
+            }
+            else
+            {
+                evt = ev.action == kPhysicsContactEvent::Action::Enter ? K_SCRIPT_ON_COLLISION_ENTER
+                    : ev.action == kPhysicsContactEvent::Action::Stay  ? K_SCRIPT_ON_COLLISION_STAY
+                    : K_SCRIPT_ON_COLLISION_EXIT;
+            }
+
+            // Each participant sees the other participant as its "other" object.
+            dispatchTo(objA, evt, objB);
+            if (objB != objA)
+                dispatchTo(objB, evt, objA);
+        }
     }
 
     void kWorld::stopPhysics()

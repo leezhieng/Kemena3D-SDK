@@ -18,7 +18,14 @@ namespace kemena
             case K_SCRIPT_ON_ENABLE:    return "void OnEnable()";
             case K_SCRIPT_ON_DISABLE:   return "void OnDisable()";
             case K_SCRIPT_ON_DESTROY:   return "void OnDestroy()";
-            default:                    return "";
+            // Collision/trigger events receive the object they touched.
+            case K_SCRIPT_ON_COLLISION_ENTER: return "void OnCollisionEnter(kObject@ other)";
+            case K_SCRIPT_ON_COLLISION_STAY:  return "void OnCollisionStay(kObject@ other)";
+            case K_SCRIPT_ON_COLLISION_EXIT:  return "void OnCollisionExit(kObject@ other)";
+            case K_SCRIPT_ON_TRIGGER_ENTER:   return "void OnTriggerEnter(kObject@ other)";
+            case K_SCRIPT_ON_TRIGGER_STAY:    return "void OnTriggerStay(kObject@ other)";
+            case K_SCRIPT_ON_TRIGGER_EXIT:    return "void OnTriggerExit(kObject@ other)";
+            default:                          return "";
         }
     }
 
@@ -396,6 +403,41 @@ namespace kemena
 
         if (context->Prepare(fn) < 0)
             return false;
+
+        int result = context->Execute();
+        if (result != asEXECUTION_FINISHED)
+        {
+            if (result == asEXECUTION_EXCEPTION)
+            {
+                printf("Script exception in %s (%s): %s\n",
+                       kScriptEventDecl(evt), inst->scriptUuid.c_str(),
+                       context->GetExceptionString());
+            }
+            context->Unprepare();
+            return false;
+        }
+
+        context->Unprepare();
+        return true;
+    }
+
+    bool kScriptManager::callEventWithObject(kScriptInstance *inst, kScriptEvent evt,
+                                             kObject *other)
+    {
+        if (!inst || !inst->valid || evt < 0 || evt >= K_SCRIPT_EVENT_COUNT)
+            return false;
+
+        asIScriptFunction *fn = inst->fn[evt];
+        if (!fn || !context)
+            return false; // the script simply does not define this event
+
+        if (context->Prepare(fn) < 0)
+            return false;
+
+        // Pass the other object as the function's first argument (a handle
+        // parameter, e.g. "kObject@ other"). kObject is registered with
+        // asOBJ_REF | asOBJ_NOCOUNT, so a raw pointer is the stored handle.
+        context->SetArgObject(0, static_cast<void *>(other));
 
         int result = context->Execute();
         if (result != asEXECUTION_FINISHED)

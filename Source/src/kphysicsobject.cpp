@@ -215,7 +215,11 @@ namespace kemena
                 break;
 
             case kPhysicsObjectType::Trigger:
-                motionType = JPH::EMotionType::Dynamic;
+                // Trigger volumes are Kinematic sensors: they must not fall under
+                // gravity or sink into static geometry, and a kinematic sensor only
+                // reports overlaps with active dynamic/kinematic actors — it ignores
+                // static floors and other triggers (see Jolt Body::SetIsSensor).
+                motionType = JPH::EMotionType::Kinematic;
                 moving     = true;
                 break;
 

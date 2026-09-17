@@ -231,4 +231,11 @@ namespace kemena
         return m_impl->character->GetGroundState() ==
                JPH::CharacterBase::EGroundState::OnGround;
     }
+
+    uint32_t kCharacterController::getBodyId() const
+    {
+        if (!m_impl->initialized || m_impl->character == nullptr)
+            return 0;
+        return m_impl->character->GetBodyID().GetIndexAndSequenceNumber();
+    }
 }

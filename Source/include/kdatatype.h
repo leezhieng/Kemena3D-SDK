@@ -125,6 +125,16 @@ namespace kemena
 
     /**
      * @brief Texture upload format (internal precision / colour-space).
+     *
+     * The first four values are uncompressed formats available on every
+     * backend.  The ETC2 / EAC and ASTC values are block-compressed formats
+     * intended for the OpenGL ES (mobile / embedded) backend, where the
+     * desktop-only S3TC / DXT family is normally unavailable.
+     *
+     * ETC2/EAC is mandatory in OpenGL ES 3.0, so a GLES device that reports
+     * ES 3.0 always supports TEX_FORMAT_ETC2_*.  ASTC is an extension
+     * (GL_KHR_texture_compression_astc_ldr) and must be queried through
+     * kDriver::supportsCompressedFormat().
      */
     enum kTextureFormat
     {
@@ -132,6 +142,17 @@ namespace kemena
         TEX_FORMAT_RGBA,  ///< 8-bit RGBA, linear colour-space.
         TEX_FORMAT_SRGB,  ///< 8-bit RGB, sRGB colour-space (gamma-corrected).
         TEX_FORMAT_SRGBA, ///< 8-bit RGBA, sRGB colour-space.
+
+        // --- Mobile / embedded block-compressed formats ---------------------
+        TEX_FORMAT_ETC2_RGB,    ///< ETC2 RGB8 (4x4 blocks, 8 bytes each) — core in ES 3.0.
+        TEX_FORMAT_ETC2_SRGB,   ///< ETC2 RGB8 sRGB — core in ES 3.0.
+        TEX_FORMAT_ETC2_RGBA,   ///< ETC2 RGBA8 (EAC alpha) — core in ES 3.0.
+        TEX_FORMAT_ETC2_SRGBA,  ///< ETC2 RGBA8 sRGB — core in ES 3.0.
+        TEX_FORMAT_ETC2_RGB_A1, ///< ETC2 RGB8 with 1-bit punch-through alpha.
+        TEX_FORMAT_ASTC_4x4,    ///< ASTC LDR 4x4 (16 bytes per block).
+        TEX_FORMAT_ASTC_6x6,    ///< ASTC LDR 6x6 (16 bytes per block).
+        TEX_FORMAT_ASTC_8x8,    ///< ASTC LDR 8x8 (16 bytes per block).
+        TEX_FORMAT_ASTC_12x12,  ///< ASTC LDR 12x12 (16 bytes per block).
     };
 
     /**

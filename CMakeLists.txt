@@ -13,6 +13,60 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Option to build shared or static library
 option(BUILD_SHARED_LIBS "Build as shared library" OFF)
 
+# ---------------------------------------------------------------------------
+# OpenGL ES 3.0 backend (Android / iOS / embedded)
+#
+# The ES backend is the only graphics backend available on these platforms and
+# is never used on desktop, where kOpenGLDriver / kDX11Driver is the correct
+# choice.  kopenglesdriver.cpp is removed from the source list unless the
+# target is genuinely an ES platform, so desktop builds never require the
+# GLES3/EGL headers or symbols.
+#
+# Eligible platforms: Android, iOS, Emscripten (WebGL 2), or any target the
+# embedder opts in with -DKEMENA_GLES_EMBEDDED=ON (vendor GLES SDKs such as
+# Mali, PowerVR or Vivante).
+# ---------------------------------------------------------------------------
+option(KEMENA_GLES "Use the OpenGL ES 3.0 backend (mobile / embedded)" OFF)
+option(KEMENA_GLES_EMBEDDED "Target is an embedded Linux device using EGL + GLES" OFF)
+option(KEMENA_GLES_ALLOW_EMULATION "Permit KEMENA_GLES on desktop via ANGLE/Mesa" OFF)
+set(KEMENA_GLES_INCLUDE_DIR "" CACHE PATH "Extra include root for GLES3/EGL headers")
+
+set(KEMENA_GLES_PLATFORM "")
+if(ANDROID)
+    set(KEMENA_GLES_PLATFORM "Android")
+elseif(IOS)
+    set(KEMENA_GLES_PLATFORM "iOS")
+elseif(EMSCRIPTEN)
+    set(KEMENA_GLES_PLATFORM "Emscripten")
+elseif(KEMENA_GLES_EMBEDDED)
+    set(KEMENA_GLES_PLATFORM "Embedded Linux")
+endif()
+
+# Turn the backend on automatically where nothing else is available.
+if(NOT KEMENA_GLES AND NOT KEMENA_GLES_PLATFORM STREQUAL "")
+    set(KEMENA_GLES ON)
+    message(STATUS "Kemena3D SDK: enabling OpenGL ES 3.0 backend for ${KEMENA_GLES_PLATFORM}")
+endif()
+
+# Refuse the ES backend on a desktop target unless emulation was requested
+# explicitly; silently building it there would link against a GLES loader that
+# is not present and produce confusing link errors.
+if(KEMENA_GLES AND KEMENA_GLES_PLATFORM STREQUAL "")
+    if(NOT KEMENA_GLES_ALLOW_EMULATION)
+        message(FATAL_ERROR
+            "KEMENA_GLES is a mobile/embedded-only backend and cannot be built for "
+            "this desktop target. Use RENDERER_GL or RENDERER_D3D11, or configure "
+            "with -DKEMENA_GLES_ALLOW_EMULATION=ON when building against ANGLE/Mesa.")
+    endif()
+    set(KEMENA_GLES_PLATFORM "Desktop (emulated)")
+    message(STATUS "Kemena3D SDK: KEMENA_GLES emulated on desktop via ANGLE/Mesa")
+endif()
+
+set(KEMENA_HAS_GLES FALSE)
+if(KEMENA_GLES)
+    set(KEMENA_HAS_GLES TRUE)
+endif()
+
 # When ON  (default): Assimp drives mesh / animation import — full format set,
 #                     editor-style build.
 # When OFF           : Assimp is not compiled / linked. tinygltf (header-only)
@@ -39,6 +93,24 @@ endif()
 # Collect core source and header files
 file(GLOB_RECURSE SRC_FILES ${CMAKE_CURRENT_SOURCE_DIR}/Source/src/*.cpp)
 file(GLOB_RECURSE HEADER_FILES ${CMAKE_CURRENT_SOURCE_DIR}/Source/include/*.h)
+
+# Exactly one GL backend is compiled per platform.  Removing the files here
+# (instead of guarding their bodies with #if) keeps each platform's translation
+# unit set and header graph clean:
+#   * Desktop keeps kOpenGLDriver (GLEW + <GL/gl.h>).
+#   * ES platforms keep kOpenGLESDriver (GLES3 + EGL).  The desktop driver
+#     cannot compile there because <GL/glew.h> and <GL/gl.h> do not exist.
+if(KEMENA_HAS_GLES)
+    list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source/src/kopengldriver.cpp)
+    list(REMOVE_ITEM HEADER_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source/include/kopengldriver.h)
+else()
+    list(REMOVE_ITEM SRC_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source/src/kopenglesdriver.cpp)
+    list(REMOVE_ITEM HEADER_FILES
+        ${CMAKE_CURRENT_SOURCE_DIR}/Source/include/kopenglesdriver.h)
+endif()
 
 # Miniaudio custom decoder backends (libvorbis, libopus)
 file(GLOB MINIAUDIO_DECODER_SRC
@@ -130,8 +202,13 @@ else()
     set(GLEW_LIB glew32)
 endif()
 
-# Use GLEW for imgui
-target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+# ImGui's OpenGL3 backend uses the GLEW loader on desktop and the built-in
+# native ES3 loader on mobile/embedded (where GLEW does not exist).
+if(KEMENA_HAS_GLES)
+    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_ES3)
+else()
+    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+endif()
 
 # Runtime/editor switch: KEMENA_NO_ASSIMP is the source-side gate every
 # import / export path keys off. Defined PUBLIC so consumers (studio, runtime)
@@ -179,29 +256,45 @@ if(KEMENA_D3D11)
     endif()
 endif()
 
-# OpenGL ES 3.0 backend for Android / mobile platforms.
-# When enabled the engine uses #include <GLES3/gl3.h> instead of GLEW,
-# requests an ES 3.0 context via SDL, and disables desktop-only features
-# (glPolygonMode, GL_FRAMEBUFFER_SRGB toggle, etc.).
-option(KEMENA_GLES "Build with OpenGL ES 3.0 backend (Android / mobile)" OFF)
-if(KEMENA_GLES)
+# ---------------------------------------------------------------------------
+# OpenGL ES 3.0 backend wiring
+#
+# The engine compiles against <GLES3/gl3.h> instead of GLEW, requests an ES 3.0
+# context, and routes the ES-only code paths through kOpenGLESDriver.  Which
+# platforms are eligible (and why desktop is rejected) is decided near the top
+# of this file.
+# ---------------------------------------------------------------------------
+if(KEMENA_HAS_GLES)
     target_compile_definitions(kemena3d PUBLIC KEMENA_GLES)
-    # On Android, GLES3 is provided by the NDK; on desktop we need to link
-    # against a GLES emulation library (e.g. ANGLE, PowerVR SDK, or Mesa).
-    if(ANDROID)
-        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
-    elseif(WIN32)
-        # When testing GLES on Windows via ANGLE, link libGLESv2 instead of opengl32.
-        # Standard desktop GL can also serve GLES through the compatibility profile.
-        message(STATUS "KEMENA_GLES on Win32: using desktop GL as GLES fallback")
-    elseif(APPLE)
-        message(STATUS "KEMENA_GLES on Apple: using OpenGL.framework (ES via compat profile)")
-    elseif(UNIX)
-        target_link_libraries(kemena3d PUBLIC GLESv2 EGL)
+
+    # Explicit GLES/EGL include root for ANGLE, PowerVR or other vendor SDKs.
+    if(KEMENA_GLES_INCLUDE_DIR)
+        target_include_directories(kemena3d PUBLIC ${KEMENA_GLES_INCLUDE_DIR})
     endif()
 
-    # GLEW is not used in GLES mode — ImGui's OpenGL3 backend needs a different loader.
-    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+    if(ANDROID)
+        # GLESv3 and EGL ship inside the NDK sysroot.
+        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
+    elseif(IOS)
+        # iOS provides OpenGLES.framework; there is no EGL (EAGL is used, and
+        # SDL wraps it).  The framework is deprecated since iOS 12 but still
+        # functional and is the only ES path available.
+        find_library(OPENGLES_FRAMEWORK OpenGLES)
+        if(OPENGLES_FRAMEWORK)
+            target_link_libraries(kemena3d PUBLIC ${OPENGLES_FRAMEWORK})
+            message(STATUS "Kemena3D SDK: linking OpenGLES.framework (${OPENGLES_FRAMEWORK})")
+        else()
+            message(FATAL_ERROR "OpenGLES.framework was not found for the iOS build.")
+        endif()
+    elseif(EMSCRIPTEN)
+        # WebGL 2 is the browser's ES 3.0 equivalent; nothing extra to link.
+        message(STATUS "Kemena3D SDK: using the WebGL 2 (ES 3.0) subset")
+    else()
+        # Embedded Linux and the explicit desktop-emulation path (ANGLE/Mesa).
+        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
+    endif()
+
+    message(STATUS "Kemena3D SDK: OpenGL ES 3.0 backend enabled (${KEMENA_GLES_PLATFORM})")
 endif()
 
 # Platform specific
@@ -255,20 +348,24 @@ if(KEMENA_USE_ASSIMP)
 endif()
 
 # GLEW (built from source via build/cmake/)
-if(MSVC)
-    target_link_libraries(kemena3d PUBLIC
-        $<IF:$<CONFIG:Debug>,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/Debug/${GLEW_LIB}.lib,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/Release/${GLEW_LIB}.lib
-        >
-    )
-else()
-    target_link_libraries(kemena3d PUBLIC
-        $<IF:$<CONFIG:Debug>,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/lib${GLEW_LIB}.a,
-            ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/lib${GLEW_LIB}.a
-        >
-    )
+# Skipped entirely for ES builds: mobile targets load GLES entry points from
+# their platform loader, and GLEW is not cross-compiled for Android/iOS.
+if(NOT KEMENA_HAS_GLES)
+    if(MSVC)
+        target_link_libraries(kemena3d PUBLIC
+            $<IF:$<CONFIG:Debug>,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/Debug/${GLEW_LIB}.lib,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/Release/${GLEW_LIB}.lib
+            >
+        )
+    else()
+        target_link_libraries(kemena3d PUBLIC
+            $<IF:$<CONFIG:Debug>,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/lib${GLEW_LIB}.a,
+                ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/lib${GLEW_LIB}.a
+            >
+        )
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

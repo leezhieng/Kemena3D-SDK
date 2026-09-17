@@ -20,6 +20,12 @@ namespace kemena
             case kScriptNodeType::EventFixedUpdate: return "On Fixed Update";
             case kScriptNodeType::EventLateUpdate:  return "On Late Update";
             case kScriptNodeType::EventOnDestroy:   return "On Destroy";
+            case kScriptNodeType::EventCollisionEnter: return "On Collision Enter";
+            case kScriptNodeType::EventCollisionStay:  return "On Collision Stay";
+            case kScriptNodeType::EventCollisionExit:  return "On Collision Exit";
+            case kScriptNodeType::EventTriggerEnter:   return "On Trigger Enter";
+            case kScriptNodeType::EventTriggerStay:    return "On Trigger Stay";
+            case kScriptNodeType::EventTriggerExit:    return "On Trigger Exit";
             case kScriptNodeType::Branch:           return "Branch";
             case kScriptNodeType::Print:            return "Print";
             case kScriptNodeType::SetPosition:      return "Set Position";
@@ -95,6 +101,9 @@ namespace kemena
             case kScriptNodeType::Sequence:             return "Sequence";
             case kScriptNodeType::GetAnimatorRootMotionPosition: return "Get Root Motion Position";
             case kScriptNodeType::GetAnimatorRootMotionRotation: return "Get Root Motion Rotation";
+            case kScriptNodeType::GetTag:             return "Get Tag";
+            case kScriptNodeType::LiteralInt:         return "Int";
+            case kScriptNodeType::ConcatString:       return "Concat String";
             default:                                return "Node";
         }
     }
@@ -244,6 +253,18 @@ namespace kemena
             case kScriptNodeType::EventLateUpdate:
             case kScriptNodeType::EventOnDestroy:
                 out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::EventCollisionEnter:
+            case kScriptNodeType::EventCollisionStay:
+            case kScriptNodeType::EventCollisionExit:
+            case kScriptNodeType::EventTriggerEnter:
+            case kScriptNodeType::EventTriggerStay:
+            case kScriptNodeType::EventTriggerExit:
+                // Physics events also expose the other object involved in the
+                // contact/overlap (fed to the generated kObject@ other argument).
+                out("", kScriptPinType::Exec);
+                out("Other", kScriptPinType::Object);
                 break;
 
             case kScriptNodeType::Branch:
@@ -625,6 +646,21 @@ namespace kemena
                 out("Delta Rotation", kScriptPinType::Vec3);
                 break;
 
+            case kScriptNodeType::GetTag:
+                in("Target", kScriptPinType::Object);
+                out("Value", kScriptPinType::String);
+                break;
+
+            case kScriptNodeType::LiteralInt:
+                out("Value", kScriptPinType::Int);
+                break;
+
+            case kScriptNodeType::ConcatString:
+                in("A", kScriptPinType::String);
+                in("B", kScriptPinType::String);
+                out("Result", kScriptPinType::String);
+                break;
+
             default:
                 break;
         }
@@ -806,6 +842,33 @@ namespace kemena
                         std::stable_sort(n.outputs.begin(), n.outputs.end(), execFirst);
                         break;
                     }
+                    // Physics event nodes expose an "Other" object output; older
+                    // graphs saved before that pin existed get it restored here.
+                    case kScriptNodeType::EventCollisionEnter:
+                    case kScriptNodeType::EventCollisionStay:
+                    case kScriptNodeType::EventCollisionExit:
+                    case kScriptNodeType::EventTriggerEnter:
+                    case kScriptNodeType::EventTriggerStay:
+                    case kScriptNodeType::EventTriggerExit:
+                    {
+                        bool hasOther = false;
+                        for (const auto &p : n.outputs)
+                            if (p.type == kScriptPinType::Object && p.name == "Other")
+                            {
+                                hasOther = true;
+                                break;
+                            }
+                        if (!hasOther)
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.name     = "Other";
+                            p.type     = kScriptPinType::Object;
+                            p.isOutput = true;
+                            n.outputs.push_back(p);
+                        }
+                        break;
+                    }
                     default:
                         break;
                 }
@@ -939,7 +1002,31 @@ namespace kemena
                 case kScriptNodeType::EventFixedUpdate: return "FixedUpdate";
                 case kScriptNodeType::EventLateUpdate:  return "LateUpdate";
                 case kScriptNodeType::EventOnDestroy:   return "OnDestroy";
-                default:                                return nullptr;
+                case kScriptNodeType::EventCollisionEnter: return "OnCollisionEnter";
+                case kScriptNodeType::EventCollisionStay:  return "OnCollisionStay";
+                case kScriptNodeType::EventCollisionExit:  return "OnCollisionExit";
+                case kScriptNodeType::EventTriggerEnter:   return "OnTriggerEnter";
+                case kScriptNodeType::EventTriggerStay:    return "OnTriggerStay";
+                case kScriptNodeType::EventTriggerExit:    return "OnTriggerExit";
+                default:                                    return nullptr;
+            }
+        }
+
+        // True when an event function is generated with a kObject@ other
+        // parameter (physics collision/trigger events expose the other body).
+        bool eventHasOther(kScriptNodeType t)
+        {
+            switch (t)
+            {
+                case kScriptNodeType::EventCollisionEnter:
+                case kScriptNodeType::EventCollisionStay:
+                case kScriptNodeType::EventCollisionExit:
+                case kScriptNodeType::EventTriggerEnter:
+                case kScriptNodeType::EventTriggerStay:
+                case kScriptNodeType::EventTriggerExit:
+                    return true;
+                default:
+                    return false;
             }
         }
 
@@ -1057,6 +1144,17 @@ namespace kemena
             {
                 switch (n.type)
                 {
+                    // Physics event nodes expose the colliding/overlapping object
+                    // through their "Other" data output — it maps to the function's
+                    // kObject@ other parameter.
+                    case kScriptNodeType::EventCollisionEnter:
+                    case kScriptNodeType::EventCollisionStay:
+                    case kScriptNodeType::EventCollisionExit:
+                    case kScriptNodeType::EventTriggerEnter:
+                    case kScriptNodeType::EventTriggerStay:
+                    case kScriptNodeType::EventTriggerExit:
+                        return "other";
+
                     case kScriptNodeType::Anchor:
                         // A reroute node forwards whatever feeds its input,
                         // regardless of wire type. Editor-only nodes never
@@ -1157,6 +1255,14 @@ namespace kemena
                         return "getPhysicsGravity()";
                     case kScriptNodeType::IsPhysicsActive:
                         return emitNamedInput(n, "Physics") + ".isActive()";
+
+                    case kScriptNodeType::GetTag:
+                        return emitNamedInput(n, "Target") + ".getTag()";
+                    case kScriptNodeType::LiteralInt:
+                        return std::to_string(static_cast<int>(n.valueFloat[0]));
+                    case kScriptNodeType::ConcatString:
+                        return "(" + emitNamedInput(n, "A") + " + " +
+                               emitNamedInput(n, "B") + ")";
 
                     default:
                         return "0";
@@ -1438,7 +1544,8 @@ namespace kemena
             int first = eo ? cg.execTarget(n, *eo) : 0;
 
             kString body = cg.emitExec(first, 4, std::set<int>());
-            code += kString("void ") + fn + "()\n{\n" + body + "}\n\n";
+            const char *params = eventHasOther(n.type) ? "(kObject@ other)" : "()";
+            code += kString("void ") + fn + params + "\n{\n" + body + "}\n\n";
         }
 
         if (!cg.error.empty())

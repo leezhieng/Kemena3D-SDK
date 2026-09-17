@@ -11,6 +11,7 @@
 #include "kphysicsobject.h"
 #include "kcharactercontroller.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,28 @@ namespace kemena
         kVec3          hitPoint;           ///< World-space position of the intersection.
         kVec3          hitNormal;          ///< World-space surface normal at the hit point.
         kPhysicsObject *object  = nullptr; ///< The physics body that was hit (manager-owned).
+    };
+
+    /**
+     * @brief One collision/overlap transition captured during a physics step.
+     *
+     * Produced by the manager's internal Jolt contact listener and consumed by
+     * the caller (kWorld / editor) after update(). Body ids are stable Jolt
+     * body ids (@c BodyID::GetIndexAndSequenceNumber), sorted low-to-high.
+     */
+    struct KEMENA3D_API kPhysicsContactEvent
+    {
+        enum class Action
+        {
+            Enter, ///< Contact/overlap began this step.
+            Stay,  ///< Contact/overlap persisted from the previous step.
+            Exit,  ///< Contact/overlap ended this step.
+        };
+
+        Action   action    = Action::Enter; ///< Enter / Stay / Exit.
+        bool     isTrigger = false;         ///< true when one body is a sensor (trigger volume).
+        uint32_t bodyA     = 0;             ///< First participating body id (sorted low).
+        uint32_t bodyB     = 0;             ///< Second participating body id (sorted high).
     };
 
     /**
@@ -189,6 +212,19 @@ namespace kemena
         kPhysicsRaycastHit raycast(const kVec3 &origin,
                                    const kVec3 &direction,
                                    float maxDistance = 1000.0f);
+
+        // --- Contact events -------------------------------------------------
+
+        /**
+         * @brief Returns and clears the contact events captured during the last update().
+         *
+         * Call after update() to receive every collision / sensor-overlap
+         * transition that occurred while the world stepped. Body ids refer to
+         * the owning kPhysicsObject / kCharacterController (see getBodyId()).
+         *
+         * @return Events from the most recent step (Enter/Stay/Exit).
+         */
+        std::vector<kPhysicsContactEvent> takeContactEvents();
 
     protected:
     private:

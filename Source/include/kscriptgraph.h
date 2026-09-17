@@ -191,6 +191,21 @@ namespace kemena
         // --- Character controller move (kept last to preserve serialised ids)
         MoveCharacter, ///< Drives a character controller's linear velocity toward a target each frame.
 
+        // --- Collision / trigger events (kept last to preserve serialised ids)
+        // Each emits the matching AngelScript function. They are entry points
+        // only — runtime physics dispatch is wired up separately.
+        EventCollisionEnter, ///< Emits the @c OnCollisionEnter function.
+        EventCollisionStay,  ///< Emits the @c OnCollisionStay function.
+        EventCollisionExit,  ///< Emits the @c OnCollisionExit function.
+        EventTriggerEnter,   ///< Emits the @c OnTriggerEnter function.
+        EventTriggerStay,    ///< Emits the @c OnTriggerStay function.
+        EventTriggerExit,    ///< Emits the @c OnTriggerExit function.
+
+        // --- Tag / int / string helpers (kept last to preserve serialised ids)
+        GetTag,       ///< Reads an object's tag string.
+        LiteralInt,   ///< Constant int value.
+        ConcatString, ///< Concatenates two strings.
+
         Count ///< Sentinel (number of node types).
     };
 

@@ -13,6 +13,7 @@
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Body/Body.h>
 #include <Jolt/Physics/Body/BodyLockInterface.h>
 #ifdef _MSC_VER
@@ -22,6 +23,7 @@
 #include <iostream>
 #include <memory>
 #include <thread>
+#include <mutex>
 #include <vector>
 #include <algorithm>
 
@@ -123,6 +125,61 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// Contact collector
+//
+// Jolt calls ContactListener callbacks from its worker threads while all
+// bodies are locked, so we only record the (sorted) body pair and the phase
+// into a mutex-protected queue. kPhysicsManager::update() drains that queue on
+// the main thread after the step and classifies each pair as a trigger
+// (sensor) or collision event.
+// ---------------------------------------------------------------------------
+struct RawContact
+{
+    enum class Phase { Enter, Stay, Exit };
+
+    Phase    phase = Phase::Enter;
+    uint32_t bodyA = 0;
+    uint32_t bodyB = 0;
+};
+
+class kContactCollector final : public JPH::ContactListener
+{
+public:
+    std::mutex              *mutex = nullptr;
+    std::vector<RawContact> *queue = nullptr;
+
+    void queuePhase(RawContact::Phase phase, const JPH::BodyID &a, const JPH::BodyID &b)
+    {
+        std::lock_guard<std::mutex> lock(*mutex);
+        RawContact c;
+        c.phase = phase;
+        c.bodyA = a.GetIndexAndSequenceNumber();
+        c.bodyB = b.GetIndexAndSequenceNumber();
+        queue->push_back(c);
+    }
+
+    void OnContactAdded(const JPH::Body &inBody1, const JPH::Body &inBody2,
+                        const JPH::ContactManifold &,
+                        JPH::ContactSettings &) override
+    {
+        queuePhase(RawContact::Phase::Enter, inBody1.GetID(), inBody2.GetID());
+    }
+
+    void OnContactPersisted(const JPH::Body &inBody1, const JPH::Body &inBody2,
+                            const JPH::ContactManifold &,
+                            JPH::ContactSettings &) override
+    {
+        queuePhase(RawContact::Phase::Stay, inBody1.GetID(), inBody2.GetID());
+    }
+
+    void OnContactRemoved(const JPH::SubShapeIDPair &inSubShapePair) override
+    {
+        queuePhase(RawContact::Phase::Exit,
+                   inSubShapePair.GetBody1ID(), inSubShapePair.GetBody2ID());
+    }
+};
+
+// ---------------------------------------------------------------------------
 // kPhysicsManager::Impl
 // ---------------------------------------------------------------------------
 namespace kemena
@@ -140,6 +197,12 @@ namespace kemena
         std::vector<kCharacterController *>        characters;
         std::vector<std::string>                   layerNames{ "Default" };
         bool                                       initialized = false;
+
+        // Contact-event capture (Jolt worker threads -> main-thread drain).
+        std::unique_ptr<kContactCollector>         contactListener;
+        std::mutex                                 contactMutex;
+        std::vector<RawContact>                    contactQueue;
+        std::vector<kPhysicsContactEvent>          contactEvents;
 
         static constexpr JPH::uint cMaxBodies             = 65536;
         static constexpr JPH::uint cNumBodyMutexes        = 0;
@@ -205,6 +268,13 @@ namespace kemena
             *m_impl->ovbpFilter,
             *m_impl->olpFilter);
 
+        // Install the contact listener that captures collision / trigger
+        // events while the simulation steps (see kContactCollector).
+        m_impl->contactListener         = std::make_unique<kContactCollector>();
+        m_impl->contactListener->mutex  = &m_impl->contactMutex;
+        m_impl->contactListener->queue  = &m_impl->contactQueue;
+        m_impl->physicsSystem->SetContactListener(m_impl->contactListener.get());
+
         // Default gravity: 9.81 m/s² downward
         m_impl->physicsSystem->SetGravity(JPH::Vec3(0.0f, -9.81f, 0.0f));
 
@@ -232,6 +302,16 @@ namespace kemena
             delete obj;
         }
         m_impl->objects.clear();
+
+        // Detach the contact listener before the physics system is destroyed.
+        if (m_impl->physicsSystem)
+            m_impl->physicsSystem->SetContactListener(nullptr);
+        m_impl->contactListener.reset();
+        {
+            std::lock_guard<std::mutex> lock(m_impl->contactMutex);
+            m_impl->contactQueue.clear();
+        }
+        m_impl->contactEvents.clear();
 
         // Tear down Jolt systems in reverse order
         m_impl->physicsSystem.reset();
@@ -271,9 +351,67 @@ namespace kemena
             m_impl->tempAllocator.get(),
             m_impl->jobSystem.get());
 
+        // Drain contact events captured on worker threads during the step and
+        // classify each pair as a collision or a trigger (sensor) overlap. This
+        // runs on the main thread, after bodies are no longer locked.
+        {
+            std::vector<RawContact> raw;
+            {
+                std::lock_guard<std::mutex> lock(m_impl->contactMutex);
+                raw.swap(m_impl->contactQueue);
+            }
+            m_impl->contactEvents.clear();
+            m_impl->contactEvents.reserve(raw.size());
+            const JPH::BodyLockInterface &bli = m_impl->physicsSystem->GetBodyLockInterface();
+            for (const RawContact &rc : raw)
+            {
+                // Bodies may be gone by the time we drain (teardown/Exit), skip them.
+                JPH::BodyLockRead lockA(bli, JPH::BodyID(rc.bodyA));
+                JPH::BodyLockRead lockB(bli, JPH::BodyID(rc.bodyB));
+                if (!lockA.Succeeded() || !lockB.Succeeded())
+                    continue;
+                const JPH::Body &ba = lockA.GetBody();
+                const JPH::Body &bb = lockB.GetBody();
+                const bool sensorA = ba.IsSensor();
+                const bool sensorB = bb.IsSensor();
+                if (sensorA && sensorB)
+                    continue; // Jolt never pairs two sensors; ignore defensively.
+
+                const bool isTrigger = sensorA || sensorB;
+                if (isTrigger)
+                {
+                    // A trigger only reports overlaps with movable actors. Ignore
+                    // static geometry (e.g. a floor the volume rests on or sinks
+                    // into) so OnTriggerEnter doesn't fire spuriously.
+                    const JPH::Body &other = sensorA ? bb : ba;
+                    if (!other.IsDynamic() && !other.IsKinematic())
+                        continue;
+                }
+
+                kPhysicsContactEvent ev;
+                ev.isTrigger = isTrigger;
+                ev.bodyA     = rc.bodyA;
+                ev.bodyB     = rc.bodyB;
+                ev.action    = rc.phase == RawContact::Phase::Enter
+                                   ? kPhysicsContactEvent::Action::Enter
+                               : rc.phase == RawContact::Phase::Stay
+                                   ? kPhysicsContactEvent::Action::Stay
+                                   : kPhysicsContactEvent::Action::Exit;
+                m_impl->contactEvents.push_back(ev);
+            }
+        }
+
         // Refresh each character's ground/contact state after the world step.
         for (kCharacterController *cc : m_impl->characters)
             cc->update(deltaTime);
+    }
+
+    std::vector<kPhysicsContactEvent> kPhysicsManager::takeContactEvents()
+    {
+        std::vector<kPhysicsContactEvent> out;
+        if (m_impl)
+            out.swap(m_impl->contactEvents);
+        return out;
     }
 
     // -----------------------------------------------------------------------

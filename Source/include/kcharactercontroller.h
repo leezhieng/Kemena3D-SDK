@@ -13,6 +13,8 @@
 #include "kexport.h"
 #include "kdatatype.h"
 
+#include <cstdint>
+
 namespace kemena
 {
     /**
@@ -113,6 +115,9 @@ namespace kemena
 
         /** @brief True when the character is standing on walkable ground. */
         bool  isOnGround() const;
+
+        /** @brief Returns the underlying Jolt body id (GetIndexAndSequenceNumber). */
+        uint32_t getBodyId() const;
 
         /**
          * @brief Internal — called by kPhysicsManager::update() right before the

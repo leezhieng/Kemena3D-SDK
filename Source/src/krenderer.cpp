@@ -1,6 +1,16 @@
 #include "krenderer.h"
+
+// The two GL backends are mutually exclusive per platform:
+//   * ES builds (Android / iOS / Web / embedded) have no desktop GL, so the
+//     GL 3.3 driver — whose header pulls in <GL/glew.h> and <GL/gl.h> — is
+//     excluded by CMake and must not be referenced here.
+//   * Desktop builds exclude the ES driver for the mirror-image reason.
+// KEMENA_GLES is defined by CMake for mobile / embedded targets.
+#ifndef KEMENA_GLES
 #include "kopengldriver.h"
+#else
 #include "kopenglesdriver.h"
+#endif
 #ifdef KEMENA_D3D11
 #include "kdx11driver.h"
 #endif
@@ -24,11 +34,31 @@ namespace kemena
 
         if (renderType == kRendererType::RENDERER_GL)
         {
+#ifndef KEMENA_GLES
             driver = new kOpenGLDriver();
+#else
+            // Desktop GL does not exist on ES platforms; fail loudly instead of
+            // falling back silently, which would mask a porting mistake.
+            std::cout << "[kRenderer] RENDERER_GL is unavailable in an OpenGL ES "
+                         "build. Use RENDERER_GLES."
+                      << std::endl;
+            return false;
+#endif
         }
         else if (renderType == kRendererType::RENDERER_GLES)
         {
+#ifdef KEMENA_GLES
             driver = new kOpenGLESDriver();
+#else
+            // Explicit failure rather than a silent fallback: on desktop the
+            // ES driver is not compiled in, and pretending it initialised would
+            // hide a genuine porting mistake.
+            std::cout << "[kRenderer] RENDERER_GLES was requested but this build "
+                         "has no OpenGL ES backend (KEMENA_GLES undefined). "
+                         "Desktop targets must use RENDERER_GL or RENDERER_D3D11."
+                      << std::endl;
+            return false;
+#endif
         }
 #ifdef KEMENA_D3D11
         else if (renderType == kRendererType::RENDERER_D3D11)

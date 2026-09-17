@@ -229,6 +229,21 @@ namespace kemena
          */
         void fixedUpdateScripts(float fixedDeltaTime);
 
+        /**
+         * @brief Dispatches physics collision/trigger events to running scripts.
+         *
+         * Reads the contact events captured by @p pm during its most recent
+         * update() and fires OnCollision* / OnTrigger* on the script components
+         * of every object that owns one of the participating bodies/characters.
+         *
+         * @param pm        Physics manager whose events are consumed.
+         * @param bodyNodes Scene nodes with live rigid bodies owned by @p pm.
+         * @param charNodes Scene nodes with live characters owned by @p pm.
+         */
+        void dispatchPhysicsContactEvents(kPhysicsManager *pm,
+                                          const std::vector<kObject *> &bodyNodes,
+                                          const std::vector<kObject *> &charNodes);
+
         /** @brief Returns true between startScripts() and stopScripts(). */
         bool getScriptsRunning() const { return scriptsRunning; }
 

@@ -66,6 +66,15 @@ namespace kemena
         K_SCRIPT_ON_ENABLE,   ///< void OnEnable()    — when the component activates.
         K_SCRIPT_ON_DISABLE,  ///< void OnDisable()   — when the component deactivates.
         K_SCRIPT_ON_DESTROY,  ///< void OnDestroy()   — when the instance is torn down.
+
+        // Physics contact / trigger events (dispatched by the physics system).
+        K_SCRIPT_ON_COLLISION_ENTER, ///< void OnCollisionEnter() — rigid-body contact started.
+        K_SCRIPT_ON_COLLISION_STAY,  ///< void OnCollisionStay()  — rigid-body contact persists.
+        K_SCRIPT_ON_COLLISION_EXIT,  ///< void OnCollisionExit()  — rigid-body contact ended.
+        K_SCRIPT_ON_TRIGGER_ENTER,   ///< void OnTriggerEnter()   — sensor overlap started.
+        K_SCRIPT_ON_TRIGGER_STAY,    ///< void OnTriggerStay()    — sensor overlap persists.
+        K_SCRIPT_ON_TRIGGER_EXIT,    ///< void OnTriggerExit()    — sensor overlap ended.
+
         K_SCRIPT_EVENT_COUNT  ///< Sentinel — number of lifecycle events.
     };
 
@@ -415,6 +424,20 @@ namespace kemena
          * @return true if the function existed and finished without exception.
          */
         bool callEvent(kScriptInstance *inst, kScriptEvent evt);
+
+        /**
+         * @brief Runs a collision/trigger event, passing the other object.
+         *
+         * Collision/trigger event functions are generated as
+         * @c void OnCollisionEnter(kObject@ other) / @c void OnTriggerEnter(kObject@ other)
+         * etc.; @p other is bound as the first (and only) argument.
+         *
+         * @param inst  Instance whose cached event function runs (no-op when absent).
+         * @param evt   Collision/trigger event to dispatch.
+         * @param other The other object involved in the contact/overlap (may be null).
+         * @return true when the event function existed and finished cleanly.
+         */
+        bool callEventWithObject(kScriptInstance *inst, kScriptEvent evt, kObject *other);
 
         // --- Host bindings ---------------------------------------------------
 
