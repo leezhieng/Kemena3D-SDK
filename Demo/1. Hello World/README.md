@@ -10,10 +10,10 @@ See [`main.cpp`](main.cpp) — it's intentionally short and commented.
 ## Prerequisites
 
 Build the Kemena3D SDK first, so the headers and libraries exist under
-`kemena3d/Output/<Config>/`:
+`Kemena3D-SDK/Output/<Config>/`:
 
 ```sh
-cd kemena3d
+cd Kemena3D-SDK
 python download_dep.py   # fetch + build third-party dependencies (once per machine)
 python build_sdk.py      # build + install the SDK into Output/Debug and Output/Release
 ```

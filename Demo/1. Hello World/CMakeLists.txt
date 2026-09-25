@@ -20,11 +20,11 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Source file
 add_executable(demo main.cpp)
 
-# Link statically against the kemena3d SDK.
+# Link statically against the Kemena3D SDK.
 target_compile_definitions(demo PRIVATE KEMENA3D_STATIC)
 
 # The built SDK output now ships headers and libs split by build config
-# (Debug / Release). Everything the demo needs — kemena3d, glm, nlohmann, and
+# (Debug / Release). Everything the demo needs - Kemena3DSDK, glm, nlohmann, and
 # all third-party libs (SDL3, assimp, AngelScript, GLEW, zlib, Recast/Detour,
 # Jolt) — lives under Output/<Config>/.
 set(KEMENA3D_OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/../../Output")
@@ -45,7 +45,7 @@ set_target_properties(demo PROPERTIES WIN32_EXECUTABLE "$<$<CONFIG:Release>:TRUE
 # Link libraries (Windows only; Linux/macOS link lists are not yet configured)
 if(WIN32)
     target_link_libraries(demo PRIVATE
-        kemena3d
+        Kemena3DSDK
 
         # Third-party static libraries (MSVC names; Debug variants use a suffix)
         SDL3-static
@@ -94,7 +94,7 @@ if(WIN32)
 elseif(APPLE)
     # macOS isn't wired up in the dependency build yet.
     message(WARNING "Kemena3D Hello World demo: macOS link list is not configured.")
-    target_link_libraries(demo PRIVATE kemena3d)
+    target_link_libraries(demo PRIVATE Kemena3DSDK)
 
 elseif(UNIX)
     # Linux / FreeBSD. Best-effort: the SDK and its dependencies must have been
@@ -109,7 +109,7 @@ elseif(UNIX)
     # the engine + its vendored deps in a link group so GNU/LLVM ld resolves them.
     target_link_libraries(demo PRIVATE
         -Wl,--start-group
-            kemena3d
+            Kemena3DSDK
             SDL3
             assimp
             angelscript

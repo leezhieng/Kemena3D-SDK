@@ -150,7 +150,7 @@ def main():
     )
 
     # Assimp toggle — when off, tinygltf is the only importer (glTF/GLB only,
-    # no save). Use the slim build for kemena3d-runtime; the editor needs ON.
+    # no save). Use the slim build for Kemena3D-Runtime; the editor needs ON.
     assimp = choose(
         "\nInclude Assimp for full-format mesh import?",
         {"1": "Yes — full importer + .glb export (editor / general use)",

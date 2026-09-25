@@ -115,7 +115,7 @@ void Update()
 }
 ```
 
-See `kemena3d-studio/sample/asset/sample.as` for the full template.
+See `Kemena3D/sample/asset/sample.as` for the full template.
 
 ---
 

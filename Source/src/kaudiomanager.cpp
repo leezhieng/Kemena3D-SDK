@@ -3,7 +3,7 @@
 
 // Custom decoding backends — libvorbis and libopus replace the built-in
 // stb_vorbis backend, giving us full Vorbis + Opus support via external
-// libraries linked from Kemena3D/Dependencies/{ogg,vorbis,opus,opusfile}.
+// libraries linked from Kemena3D-SDK/Dependencies/{ogg,vorbis,opus,opusfile}.
 #include "miniaudio_libvorbis.h"
 #include "miniaudio_libopus.h"
 
@@ -44,7 +44,7 @@ namespace kemena
         // --- Resource manager with custom decoding backends -----------------
         // libvorbis + libopus replace miniaudio's built-in stb_vorbis backend,
         // giving us full Vorbis and Opus support via the external libraries
-        // linked from Kemena3D/Dependencies/.
+        // linked from Kemena3D-SDK/Dependencies/.
         {
             ma_decoding_backend_vtable* customBackends[] = {
                 ma_decoding_backend_libvorbis,

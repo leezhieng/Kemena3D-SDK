@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(Kemena3dSdk
+project(Kemena3DSDK
     VERSION 0.0.1
     DESCRIPTION "Kemena3D SDK"
     LANGUAGES C CXX
@@ -141,9 +141,9 @@ file(GLOB IMGUIZMO_SRC ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.c
 file(GLOB IMGUIZMO_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imguizmo/src/*.h)
 
 # Create library target
-add_library(kemena3d ${SRC_FILES} ${HEADER_FILES} ${ANGELSCRIPT_SRC} ${ANGELSCRIPT_HEADERS} ${IMGUI_SRC} ${IMGUI_HEADERS} ${IMGUI_BACKENDS} ${IMGUIZMO_SRC} ${IMGUIZMO_HEADERS} ${MINIAUDIO_DECODER_SRC})
+add_library(Kemena3DSDK ${SRC_FILES} ${HEADER_FILES} ${ANGELSCRIPT_SRC} ${ANGELSCRIPT_HEADERS} ${IMGUI_SRC} ${IMGUI_HEADERS} ${IMGUI_BACKENDS} ${IMGUIZMO_SRC} ${IMGUIZMO_HEADERS} ${MINIAUDIO_DECODER_SRC})
 
-set_target_properties(kemena3d PROPERTIES
+set_target_properties(Kemena3DSDK PROPERTIES
     VERSION ${PROJECT_VERSION}
     PUBLIC_HEADER "${HEADER_FILES}"
 
@@ -159,7 +159,7 @@ set_target_properties(kemena3d PROPERTIES
 )
 
 # Include directories
-target_include_directories(kemena3d
+target_include_directories(Kemena3DSDK
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/Source/include
 		${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/imgui
@@ -196,7 +196,7 @@ link_directories(
 
 # Definitions and static linking behavior
 if (NOT BUILD_SHARED_LIBS)
-    target_compile_definitions(kemena3d PRIVATE GLEW_STATIC)
+    target_compile_definitions(Kemena3DSDK PRIVATE GLEW_STATIC)
     set(GLEW_LIB libglew32)
 else()
     set(GLEW_LIB glew32)
@@ -205,16 +205,16 @@ endif()
 # ImGui's OpenGL3 backend uses the GLEW loader on desktop and the built-in
 # native ES3 loader on mobile/embedded (where GLEW does not exist).
 if(KEMENA_HAS_GLES)
-    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_ES3)
+    target_compile_definitions(Kemena3DSDK PRIVATE IMGUI_IMPL_OPENGL_ES3)
 else()
-    target_compile_definitions(kemena3d PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
+    target_compile_definitions(Kemena3DSDK PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW)
 endif()
 
 # Runtime/editor switch: KEMENA_NO_ASSIMP is the source-side gate every
 # import / export path keys off. Defined PUBLIC so consumers (studio, runtime)
 # see the same value as the SDK objects.
 if(NOT KEMENA_USE_ASSIMP)
-    target_compile_definitions(kemena3d PUBLIC KEMENA_NO_ASSIMP)
+    target_compile_definitions(Kemena3DSDK PUBLIC KEMENA_NO_ASSIMP)
 endif()
 
 # Jolt was built with default options (DEBUG_RENDERER_IN_DEBUG_AND_RELEASE,
@@ -222,7 +222,7 @@ endif()
 # all PUBLIC on the Jolt target. Since we link the prebuilt Jolt.lib directly (no imported
 # target), we must mirror the same defines here. A mismatch makes JPH_VERSION_ID at the
 # kPhysicsManager::init call site disagree with Jolt.lib, and RegisterTypes() std::abort()s.
-target_compile_definitions(kemena3d PUBLIC
+target_compile_definitions(Kemena3DSDK PUBLIC
     $<$<CONFIG:Debug,Release>:JPH_DEBUG_RENDERER>
     $<$<CONFIG:Debug,Release>:JPH_PROFILE_ENABLED>
     JPH_OBJECT_STREAM
@@ -232,13 +232,13 @@ target_compile_definitions(kemena3d PUBLIC
 # All static dependencies (assimp, Jolt, angelscript, recast) are built with
 # /MD (MultiThreadedDLL).  Force /MD here so CRT records match at link time.
 if(MSVC AND NOT BUILD_SHARED_LIBS)
-    set_target_properties(kemena3d PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+    set_target_properties(Kemena3DSDK PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 endif()
 
 # OpenGL context version — default 3.3, opt-in to 4.5
 option(KEMENA_OPENGL_45 "Use an OpenGL 4.5 context instead of 3.3" OFF)
 if(KEMENA_OPENGL_45)
-    target_compile_definitions(kemena3d PUBLIC KEMENA_OPENGL_45)
+    target_compile_definitions(Kemena3DSDK PUBLIC KEMENA_OPENGL_45)
 endif()
 
 # DirectX 11 backend for Windows desktop.
@@ -248,7 +248,7 @@ endif()
 option(KEMENA_D3D11 "Build with DirectX 11 backend (Windows only)" OFF)
 if(KEMENA_D3D11)
     if(WIN32)
-        target_compile_definitions(kemena3d PUBLIC KEMENA_D3D11)
+        target_compile_definitions(Kemena3DSDK PUBLIC KEMENA_D3D11)
         # kdx11driver.h includes <windows.h> and <d3d11.h>, so every consumer of
         # that header needs NOMINMAX and WIN32_LEAN_AND_MEAN defined *before* any
         # Windows header is pulled in — otherwise the min/max macros leak and
@@ -257,7 +257,7 @@ if(KEMENA_D3D11)
         # KEMENA_D3D11 is enabled).  PUBLIC so the studio and runtime targets
         # inherit them, and only for this backend so OpenGL builds keep exactly
         # the definitions they had before.
-        target_compile_definitions(kemena3d PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
+        target_compile_definitions(Kemena3DSDK PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
         message(STATUS "Kemena3D SDK: DirectX 11 backend enabled")
     else()
         message(WARNING "KEMENA_D3D11 is only supported on Windows — disabling")
@@ -274,23 +274,23 @@ endif()
 # of this file.
 # ---------------------------------------------------------------------------
 if(KEMENA_HAS_GLES)
-    target_compile_definitions(kemena3d PUBLIC KEMENA_GLES)
+    target_compile_definitions(Kemena3DSDK PUBLIC KEMENA_GLES)
 
     # Explicit GLES/EGL include root for ANGLE, PowerVR or other vendor SDKs.
     if(KEMENA_GLES_INCLUDE_DIR)
-        target_include_directories(kemena3d PUBLIC ${KEMENA_GLES_INCLUDE_DIR})
+        target_include_directories(Kemena3DSDK PUBLIC ${KEMENA_GLES_INCLUDE_DIR})
     endif()
 
     if(ANDROID)
         # GLESv3 and EGL ship inside the NDK sysroot.
-        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
+        target_link_libraries(Kemena3DSDK PUBLIC GLESv3 EGL)
     elseif(IOS)
         # iOS provides OpenGLES.framework; there is no EGL (EAGL is used, and
         # SDL wraps it).  The framework is deprecated since iOS 12 but still
         # functional and is the only ES path available.
         find_library(OPENGLES_FRAMEWORK OpenGLES)
         if(OPENGLES_FRAMEWORK)
-            target_link_libraries(kemena3d PUBLIC ${OPENGLES_FRAMEWORK})
+            target_link_libraries(Kemena3DSDK PUBLIC ${OPENGLES_FRAMEWORK})
             message(STATUS "Kemena3D SDK: linking OpenGLES.framework (${OPENGLES_FRAMEWORK})")
         else()
             message(FATAL_ERROR "OpenGLES.framework was not found for the iOS build.")
@@ -300,7 +300,7 @@ if(KEMENA_HAS_GLES)
         message(STATUS "Kemena3D SDK: using the WebGL 2 (ES 3.0) subset")
     else()
         # Embedded Linux and the explicit desktop-emulation path (ANGLE/Mesa).
-        target_link_libraries(kemena3d PUBLIC GLESv3 EGL)
+        target_link_libraries(Kemena3DSDK PUBLIC GLESv3 EGL)
     endif()
 
     message(STATUS "Kemena3D SDK: OpenGL ES 3.0 backend enabled (${KEMENA_GLES_PLATFORM})")
@@ -308,32 +308,32 @@ endif()
 
 # Platform specific
 if (WIN32)
-	target_link_libraries(kemena3d PUBLIC opengl32)
+	target_link_libraries(Kemena3DSDK PUBLIC opengl32)
 	   if(KEMENA_D3D11)
-	       target_link_libraries(kemena3d PUBLIC d3d11 dxgi d3dcompiler)
+	       target_link_libraries(Kemena3DSDK PUBLIC d3d11 dxgi d3dcompiler)
 	   endif()
-	   target_compile_definitions(kemena3d PRIVATE _WINDOWS NOMINMAX)
+	   target_compile_definitions(Kemena3DSDK PRIVATE _WINDOWS NOMINMAX)
 	if (NOT BUILD_SHARED_LIBS)
-		target_compile_definitions(kemena3d PUBLIC KEMENA3D_STATIC)
+		target_compile_definitions(Kemena3DSDK PUBLIC KEMENA3D_STATIC)
 	endif()
 	# Define export macro only for shared builds
     if (BUILD_SHARED_LIBS)
-        target_compile_definitions(kemena3d PRIVATE KEMENA3D_EXPORTS)
+        target_compile_definitions(Kemena3DSDK PRIVATE KEMENA3D_EXPORTS)
     endif()
 elseif (APPLE)
     find_library(COCOA_LIBRARY Cocoa)
     find_library(OpenGL_LIBRARY OpenGL)
-    target_link_libraries(kemena3d PUBLIC ${COCOA_LIBRARY} ${OpenGL_LIBRARY})
-    target_compile_definitions(kemena3d PRIVATE _MACOS)
+    target_link_libraries(Kemena3DSDK PUBLIC ${COCOA_LIBRARY} ${OpenGL_LIBRARY})
+    target_compile_definitions(Kemena3DSDK PRIVATE _MACOS)
 elseif (UNIX)
     find_package(OpenGL REQUIRED)
     find_package(X11 REQUIRED)
-    target_link_libraries(kemena3d PUBLIC ${OPENGL_LIBRARIES} ${X11_LIBRARIES})
-    target_compile_definitions(kemena3d PRIVATE _LINUX)
+    target_link_libraries(Kemena3DSDK PUBLIC ${OPENGL_LIBRARIES} ${X11_LIBRARIES})
+    target_compile_definitions(Kemena3DSDK PRIVATE _LINUX)
 endif()
 
 # Link libraries
-target_link_libraries(kemena3d
+target_link_libraries(Kemena3DSDK
     PUBLIC
 		$<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/angelscript/build_Debug/libangelscript.dll.a,
@@ -347,7 +347,7 @@ target_link_libraries(kemena3d
 
 # Assimp is linked only for editor-style builds.
 if(KEMENA_USE_ASSIMP)
-    target_link_libraries(kemena3d
+    target_link_libraries(Kemena3DSDK
         PUBLIC
             $<IF:$<CONFIG:Debug>,
                 ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/assimp/build_Debug/libassimp.dll.a,
@@ -361,14 +361,14 @@ endif()
 # their platform loader, and GLEW is not cross-compiled for Android/iOS.
 if(NOT KEMENA_HAS_GLES)
     if(MSVC)
-        target_link_libraries(kemena3d PUBLIC
+        target_link_libraries(Kemena3DSDK PUBLIC
             $<IF:$<CONFIG:Debug>,
                 ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/Debug/${GLEW_LIB}.lib,
                 ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/Release/${GLEW_LIB}.lib
             >
         )
     else()
-        target_link_libraries(kemena3d PUBLIC
+        target_link_libraries(Kemena3DSDK PUBLIC
             $<IF:$<CONFIG:Debug>,
                 ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Debug/lib/lib${GLEW_LIB}.a,
                 ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/glew/build/cmake/build_Release/lib/lib${GLEW_LIB}.a
@@ -379,7 +379,7 @@ endif()
 
 # ---------------------------------------------------------------------------
 # Audio codec libraries (libogg, libvorbis, libvorbisfile, libopus, libopusfile)
-# Built from source by Kemena3D/download_dep.py.
+# Built from source by Kemena3D-SDK/download_dep.py.
 # ---------------------------------------------------------------------------
 set(OGG_ROOT        ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/ogg)
 set(VORBIS_ROOT     ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/vorbis)
@@ -389,7 +389,7 @@ set(OPUSFILE_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/opusfile)
 if(MSVC)
     # MSVC multi-config → libs land in build_<Config>/<Config>/ (ogg, opus, opusfile)
     # or build_<Config>/lib/<Config>/ (vorbis which sets ARCHIVE_OUTPUT_DIRECTORY).
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${OGG_ROOT}/build_Debug/Debug/ogg.lib,
             ${OGG_ROOT}/build_Release/Release/ogg.lib
@@ -413,7 +413,7 @@ if(MSVC)
     )
 else()
     # MinGW / Unix single-config → libs land directly in build_<Config>/
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${OGG_ROOT}/build_Debug/libogg.a,
             ${OGG_ROOT}/build_Release/libogg.a
@@ -442,21 +442,21 @@ endif()
 #   Xcode:  build_Debug/Debug/libJolt.a
 #   Unix/Makefiles:  build_Debug/libJolt.a
 if(MSVC)
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/Jolt.lib,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/Jolt.lib
         >
     )
 elseif(CMAKE_GENERATOR STREQUAL "Xcode")
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/Debug/libJolt.a,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/Release/libJolt.a
         >
     )
 else()
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Debug/libJolt.a,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/jolt/Build/build_Release/libJolt.a
@@ -466,7 +466,7 @@ endif()
 
 # Recast Navigation (Recast, Detour, DetourCrowd, DetourTileCache)
 if(MSVC)
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/recast/dist/lib/Debug/Recast.lib,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/recast/dist/lib/Release/Recast.lib
@@ -485,7 +485,7 @@ if(MSVC)
         >
     )
 else()
-    target_link_libraries(kemena3d PUBLIC
+    target_link_libraries(Kemena3DSDK PUBLIC
         $<IF:$<CONFIG:Debug>,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/recast/dist/lib/Debug/libRecast.a,
             ${CMAKE_CURRENT_SOURCE_DIR}/Dependencies/recast/dist/lib/Release/libRecast.a
@@ -507,25 +507,25 @@ endif()
 
 # Suppress some noisy warnings
 if (MSVC)
-    target_compile_options(kemena3d PRIVATE /wd4996 /FS)
+    target_compile_options(Kemena3DSDK PRIVATE /wd4996 /FS)
     # Treat source and execution charsets as UTF-8. Without this MSVC assumes
     # the active code page (e.g. 936/GBK) and emits C4819 for UTF-8 files
     # containing non-ASCII characters (e.g. ©, –, emoji in comments).
-    target_compile_options(kemena3d PRIVATE /utf-8)
+    target_compile_options(Kemena3DSDK PRIVATE /utf-8)
 else()
-    target_compile_options(kemena3d PRIVATE -Wno-deprecated-declarations)
+    target_compile_options(Kemena3DSDK PRIVATE -Wno-deprecated-declarations)
 endif()
 
 # Visual Studio startup project
 if (MSVC)
-    set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT kemena3d)
+    set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT Kemena3DSDK)
 endif()
 
 include(GNUInstallDirs) # defines CMAKE_INSTALL_INCLUDEDIR=include, LIBDIR=lib
 
 # Install libraries → into lib/<CONFIG>
-install(TARGETS kemena3d
-    EXPORT kemena3dTargets
+install(TARGETS Kemena3DSDK
+    EXPORT Kemena3DSDKTargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION lib

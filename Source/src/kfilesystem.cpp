@@ -174,7 +174,7 @@ kString kFileSystem::resolveOSPath(const kString& relativePath)
     {
         // Extract the file to a temporary location for APIs that need an OS path.
         // We use the system temp directory, preserving the relative path structure.
-        fs::path tempDir = fs::temp_directory_path() / "kemena3d_extracted";
+        fs::path tempDir = fs::temp_directory_path() / "Kemena3D_extracted";
         std::error_code ec;
         fs::create_directories(tempDir, ec);
 

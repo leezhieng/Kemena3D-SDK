@@ -9,10 +9,10 @@ Standalone example programs that link against the built Kemena3D SDK.
 ## Prerequisites
 
 Build the SDK first, so the demos can link against the headers and libraries
-under `kemena3d/Output/<Config>/`:
+under `Kemena3D-SDK/Output/<Config>/`:
 
 ```sh
-cd kemena3d
+cd Kemena3D-SDK
 python download_dep.py   # fetch + build third-party dependencies (once per machine)
 python build_sdk.py      # build + install the SDK into Output/Debug and Output/Release
 ```
