@@ -22,6 +22,20 @@ namespace kemena
     class kMesh;
 
     /**
+     * @brief One weighted clip sample used by kAnimator::calculateBlendedBoneTransform().
+     *
+     * Blend-tree playback feeds an arbitrary set of these (all belonging to the
+     * same skeleton) so the animator can blend every one of their poses in a
+     * single hierarchy traversal.
+     */
+    struct kPoseSample
+    {
+        kSkeletalAnimation *animation = nullptr; ///< Clip to sample.
+        float               time      = 0.0f;    ///< Clip time in ticks.
+        float               weight    = 0.0f;    ///< Blend weight (relative; normalized internally).
+    };
+
+    /**
      * @brief Controls playback of animation clips.
      *
      * Today the animator only plays skeletal clips (kSkeletalAnimation): it
@@ -109,6 +123,24 @@ namespace kemena
          * @param parentTransform Accumulated world transform of the parent bone.
          */
         void calculateBoneTransform(const kNodeData *node, kMat4 parentTransform);
+
+        /**
+         * @brief Computes a weighted blend of several clips' poses in one pass.
+         *
+         * Recursively traverses @p node; for each joint it finds the matching
+         * bone in every sample clip, samples it at that sample's time, then
+         * blends the per-bone local transforms (position/scale lerp, rotation
+         * hemisphere-aligned weighted accumulation + normalize). The blended
+         * skeleton is written to finalBoneMatrices exactly like
+         * calculateBoneTransform(). The caller supplies the samples every frame,
+         * so no blend state is stored on the animator (ABI stays unchanged).
+         *
+         * @param samples Weighted clip samples (same skeleton, non-empty).
+         * @param node    Current hierarchy node being processed.
+         * @param parentTransform Accumulated world transform of the parent bone.
+         */
+        void calculateBlendedBoneTransform(const std::vector<kPoseSample> &samples,
+                                           const kNodeData *node, kMat4 parentTransform);
 
         /** @brief Per-bone world matrices ready for shader upload. */
         const std::vector<kMat4> getFinalBoneMatrices() const;

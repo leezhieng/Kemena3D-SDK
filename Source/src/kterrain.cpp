@@ -95,6 +95,12 @@ float distGGX(float NdotH,float r){float a=r*r,a2=a*a;return a2/(PI*(NdotH*NdotH
 float geoSchlick(float ndotv,float r){float k=(r+1.0)*(r+1.0)/8.0;return ndotv/(ndotv*(1.0-k)+k);}
 float geoSmith(float NdotV,float NdotL,float r){return geoSchlick(NdotV,r)*geoSchlick(NdotL,r);}
 vec3 fresnelSchlick(float ct,vec3 F0){return F0+(1.0-F0)*pow(clamp(1.0-ct,0.0,1.0),5.0);}
+vec3 fresnelSchlickRoughness(float ct,vec3 F0,float r){return F0+(max(vec3(1.0-r),F0)-F0)*pow(clamp(1.0-ct,0.0,1.0),5.0);}
+vec3 envBRDFApprox(vec3 sc,float r,float NoV){
+    const vec4 c0=vec4(-1.0,-0.0275,-0.572,0.022),c1=vec4(1.0,0.0425,1.04,-0.04);
+    vec4 ir=r*c0+c1; float a=min(ir.x*ir.x,exp2(-9.28*NoV))*ir.x+ir.y;
+    vec2 AB=vec2(-1.04,1.04)*a+ir.zw; return sc*AB.x+AB.y;
+}
 vec3 calcPBR(vec3 al,float met,float r,vec3 F0,vec3 n,vec3 v,vec3 l,vec3 rd){
     vec3 h=normalize(v+l); float NdotH=max(dot(n,h),0.0),NdotV=max(dot(n,v),0.0),NdotL=max(dot(n,l),0.0);
     float NDF=distGGX(NdotH,r),G=geoSmith(NdotV,NdotL,r);
@@ -112,7 +118,15 @@ void main() {
     for(int i=0;i<pointLightNum;i++){vec3 l=normalize(pointLights[i].position-v_worldPos);float d=length(pointLights[i].position-v_worldPos);Lo+=calcPBR(albedo,material.metallic,material.roughness,F0,N,v,l,pointLights[i].diffuse/(pointLights[i].constant+pointLights[i].linear*d+pointLights[i].quadratic*d*d));}
     for(int i=0;i<spotLightNum;i++){vec3 l=normalize(spotLights[i].position-v_worldPos);float theta=dot(l,normalize(-spotLights[i].direction));float eps=spotLights[i].cutOff-spotLights[i].outerCutOff;float intens=clamp((theta-spotLights[i].outerCutOff)/eps,0.0,1.0);float d=length(spotLights[i].position-v_worldPos);Lo+=calcPBR(albedo,material.metallic,material.roughness,F0,N,v,l,spotLights[i].diffuse*intens/(spotLights[i].constant+spotLights[i].linear*d+spotLights[i].quadratic*d*d));}
     vec3 ambient = sceneAmbient * albedo;
-    if(skyboxAmbientEnabled){ambient+=texture(skyboxMap,reflect(-v,N)).rgb*skyboxAmbientStrength;}
+    if(skyboxAmbientEnabled){
+        // Split-sum IBL so metallic/roughness/normal shape the sky ambient.
+        float NdotV=max(dot(N,v),0.0); vec3 R=reflect(-v,N);
+        vec3 irr=textureLod(skyboxMap,N,8.0).rgb;
+        vec3 pre=textureLod(skyboxMap,R,material.roughness*6.0).rgb;
+        vec3 Fa=fresnelSchlickRoughness(NdotV,F0,material.roughness);
+        vec3 kD=(1.0-Fa)*(1.0-material.metallic);
+        ambient+=(kD*albedo*irr+pre*envBRDFApprox(F0,material.roughness,NdotV))*skyboxAmbientStrength;
+    }
     fragColor = vec4(ambient+Lo, 1.0);
 }
 )";

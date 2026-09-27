@@ -77,7 +77,26 @@ namespace kemena
          */
         bool init(kWindow *window = nullptr, kRendererType type = kRendererType::RENDERER_GL);
 
-        /** @brief Destroys all GPU resources and the driver. */
+        /**
+         * @brief Initialises the renderer on an EXISTING driver (shared context).
+         *
+         * Unlike init(), this does not create a graphics context. Use it for a
+         * second render target that draws the same scene as another renderer:
+         * vertex-array objects are context-local, so both renderers must share a
+         * single context or the second one cannot draw meshes uploaded by the
+         * first. The renderer does NOT take ownership of @p sharedDriver; the
+         * caller keeps it alive for this renderer's lifetime and destroys it via
+         * the owning renderer.
+         *
+         * @param window       Window @p sharedDriver belongs to (size hint, may be nullptr).
+         * @param sharedDriver Driver/context to render on. Must not be null.
+         * @param type         Backend type of @p sharedDriver.
+         * @return true on success.
+         */
+        bool initShared(kWindow *window, kDriver *sharedDriver,
+                        kRendererType type = kRendererType::RENDERER_GL);
+
+        /** @brief Destroys all GPU resources and the driver (only when owned). */
         void destroy();
 
         /**
@@ -497,7 +516,8 @@ namespace kemena
         kWindow *appWindow = nullptr; ///< Target window the renderer was initialised with (may be nullptr).
 
         kRendererType renderType; ///< Selected graphics backend type.
-        kDriver *driver = nullptr; ///< Owned graphics driver abstraction.
+        kDriver *driver = nullptr; ///< Graphics driver abstraction.
+        bool ownsDriver = true;    ///< False when the driver was supplied via initShared() (shared context).
 
         kVec4 clearColor = kVec4(0.0f, 0.0f, 0.0f, 1.0f); ///< Framebuffer clear colour (stored in linear space).
 

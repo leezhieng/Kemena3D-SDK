@@ -651,7 +651,11 @@ void main()
         builtinShader->setValue("modelMatrix",      mesh->getModelMatrixWorld());
         builtinShader->setValue("viewMatrix",       camera->getViewMatrix());
         builtinShader->setValue("projectionMatrix", camera->getProjectionMatrix());
-        builtinShader->setValue("viewPos",          camera->getPosition());
+        // Must be the WORLD position: a camera parented to a moving object (the
+        // game panel's player camera) has a local offset that never tracks the
+        // parent, so using getPosition() would pin viewPos near the origin and
+        // break cascade selection in the shaders.
+        builtinShader->setValue("viewPos",          camera->getGlobalPosition());
 
         // Bone transforms for skinned meshes — mirrors the pattern in
         // drawMeshWithMaterial() so the white/preview shader supports
@@ -681,7 +685,11 @@ void main()
         shader->setValue("viewMatrix",       camera->getViewMatrix());
         shader->setValue("projectionMatrix", camera->getProjectionMatrix());
         shader->setValue("normalMatrix",     mesh->getNormalMatrix());
-        shader->setValue("viewPos",          camera->getPosition());
+        // World-space eye position (see the note in drawMeshBuiltin). The lit
+        // shaders use distance(worldPos, viewPos) to pick a shadow cascade, so a
+        // local position here makes the selected cascade — and thus the shadow
+        // resolution — stop following a parented (player) camera.
+        shader->setValue("viewPos",          camera->getGlobalPosition());
 
         shader->setValue("material.tiling",    mesh->getMaterial()->getUvTiling());
         shader->setValue("material.ambient",   mesh->getMaterial()->getAmbientColor());

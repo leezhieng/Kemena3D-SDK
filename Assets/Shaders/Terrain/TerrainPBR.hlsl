@@ -243,6 +243,24 @@ float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
     return (kD * albedo / PI + spec) * radiance * NdotL;
 }
 
+// Fresnel with a roughness-aware ceiling (see mesh_pbr.hlsl).
+float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
+{
+    return F0 + (max((float3)(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, UE4).
+float3 envBRDFApprox(float3 specularColor, float roughness, float NoV)
+{
+    const float4 c0 = float4(-1.0, -0.0275, -0.572,  0.022);
+    const float4 c1 = float4( 1.0,  0.0425,  1.04,  -0.04);
+    float4 r    = roughness * c0 + c1;
+    float  a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    float2 AB   = float2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
+
 float heightBlend(float weight, float height, float sharpness)
 {
     return clamp(weight * sharpness - (sharpness - 1.0) * 0.5, 0.0, 1.0);
@@ -376,10 +394,22 @@ float4 mainPS(PS_INPUT input) : SV_TARGET
     // Ambient
     float3 ambient = sceneAmbient * albedo * ao;
 
+    // Skybox ambient — physically-based (split-sum IBL) so the terrain's
+    // metallic / roughness / normal (and per-layer AO) shape the result
+    // instead of the sky simply being overlaid.
     if (skyboxAmbientEnabled)
     {
-        float3 skyColor = skyboxMap.Sample(s_LinearWrap, reflect(-v, N)).rgb;
-        ambient += skyColor * skyboxAmbientStrength * ao;
+        float  NdotV       = max(dot(N, v), 0.0);
+        float3 R           = reflect(-v, N);
+        float3 irradiance  = skyboxMap.SampleLevel(s_LinearWrap, N, 8.0).rgb;
+        float3 prefiltered = skyboxMap.SampleLevel(s_LinearWrap, R, roughness * 6.0).rgb;
+
+        float3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+        float3 kD    = (1.0 - F_amb) * (1.0 - metallic);
+
+        ambient += (kD * albedo * irradiance +
+                    prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
+                   skyboxAmbientStrength * ao;
     }
 
     return float4(ambient + Lo, 1.0);

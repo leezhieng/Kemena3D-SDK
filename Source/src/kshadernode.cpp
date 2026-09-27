@@ -1015,6 +1015,24 @@ vec3 calcSpotLight(SpotLight light, vec3 norm, vec3 fragPos, vec3 vdir, vec3 alb
     float att    = 1.0 / (light.constant + light.linear * dist + light.quadratic * dist * dist);
     return (light.diffuse * albedo * diff + light.specular * specCol * spec) * light.power * intens * att;
 }
+
+// Fresnel with a roughness-aware ceiling (see mesh_phong.glsl).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, UE4).
+vec3 envBRDFApprox(vec3 specularColor, float roughness, float NoV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+    vec4  r    = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2  AB   = vec2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
 )";
     }
 
@@ -1088,6 +1106,24 @@ vec3 calcPBR(vec3 albedo, float metallic, float roughness, vec3 F0,
     vec3  kD    = (1.0 - F) * (1.0 - metallic);
     vec3  spec  = NDF * G * F / (4.0 * NdotV * NdotL + 0.0001);
     return (kD * albedo / PI + spec) * radiance * NdotL;
+}
+
+// Fresnel with a roughness-aware ceiling (see mesh_pbr.glsl).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, UE4).
+vec3 envBRDFApprox(vec3 specularColor, float roughness, float NoV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+    vec4  r    = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2  AB   = vec2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
 }
 )";
 }
@@ -1172,7 +1208,18 @@ kShaderCompileResult kShaderCompiler::compile(const kShaderGraph& graph)
     vec3 vdir = normalize(viewPos - v_worldPos);
     vec3 result = sceneAmbient * material.ambient;
     if (skyboxAmbientEnabled)
-        result += texture(skyboxMap, norm).rgb * skyboxAmbientStrength * material.ambient;
+    {
+        // Material-aware skybox ambient — roughness derived from Phong
+        // shininess, specular reflection added un-tinted (see mesh_phong.glsl).
+        float _rough = clamp(1.0 - material.shininess / (material.shininess + 1.0), 0.04, 1.0);
+        float _NdotV = max(dot(norm, vdir), 0.0);
+        vec3  _R     = reflect(-vdir, norm);
+        vec3  _irr   = textureLod(skyboxMap, norm, 8.0).rgb;
+        vec3  _pre   = textureLod(skyboxMap, _R, _rough * 6.0).rgb;
+        vec3  _Famb  = fresnelSchlickRoughness(_NdotV, vec3(0.04), _rough);
+        result += (vec3(1.0) - _Famb) * _irr * skyboxAmbientStrength * material.ambient
+                + _pre * material.specular * envBRDFApprox(vec3(1.0), _rough, _NdotV) * skyboxAmbientStrength;
+    }
 )";
         frag += "    vec3 _albedo   = " + albedo   + ";\n";
         frag += "    vec3 _specular = " + specular + ";\n";
@@ -1247,7 +1294,17 @@ kShaderCompileResult kShaderCompiler::compile(const kShaderGraph& graph)
     }
     vec3 ambient = sceneAmbient * material.ambient * _albedo;
     if (skyboxAmbientEnabled)
-        ambient += texture(skyboxMap, norm).rgb * skyboxAmbientStrength * material.ambient * _albedo;
+    {
+        // Physically-based skybox ambient (split-sum IBL, see mesh_pbr.glsl).
+        float _NdotV = max(dot(norm, v), 0.0);
+        vec3  _R     = reflect(-v, norm);
+        vec3  _irr   = textureLod(skyboxMap, norm, 8.0).rgb;
+        vec3  _pre   = textureLod(skyboxMap, _R, _roughness * 6.0).rgb;
+        vec3  _Famb  = fresnelSchlickRoughness(_NdotV, F0, _roughness);
+        vec3  _kD    = (1.0 - _Famb) * (1.0 - _metallic);
+        ambient += (_kD * _albedo * _irr + _pre * envBRDFApprox(F0, _roughness, _NdotV))
+                   * skyboxAmbientStrength * material.ambient;
+    }
 )";
         frag += "    result = ambient * _ao + result + _emissive;\n";
         frag += "    fragColor = vec4(result, " + alpha + ");\n";

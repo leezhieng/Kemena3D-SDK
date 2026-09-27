@@ -87,6 +87,33 @@ namespace kemena
         return true;
     }
 
+    bool kRenderer::initShared(kWindow *window, kDriver *sharedDriver, kRendererType type)
+    {
+        if (sharedDriver == nullptr)
+            return false;
+
+        if (window != nullptr)
+            appWindow = window;
+
+        renderType = type;
+
+        // Adopt the existing driver/context without taking ownership. Sharing the
+        // context (rather than creating one) is what lets this renderer draw the
+        // meshes uploaded by the owning renderer — VAOs are context-local.
+        driver = sharedDriver;
+        ownsDriver = false;
+
+        kDriver::setCurrent(driver);
+
+        if (window != nullptr)
+        {
+            fboWidth = window->getWindowWidth();
+            fboHeight = window->getWindowHeight();
+        }
+
+        return true;
+    }
+
     void kRenderer::destroy()
     {
         if (driver == nullptr)
@@ -224,8 +251,13 @@ namespace kemena
             debugLineVbo = 0;
         }
 
-        driver->destroy();
-        delete driver;
+        // A driver supplied through initShared() is owned by another renderer and
+        // backs a shared context, so it must not be destroyed or deleted here.
+        if (ownsDriver)
+        {
+            driver->destroy();
+            delete driver;
+        }
         driver = nullptr;
     }
 

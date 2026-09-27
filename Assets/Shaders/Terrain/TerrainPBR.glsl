@@ -221,6 +221,24 @@ vec3 calcPBR(vec3 albedo, float metallic, float roughness, vec3 F0,
     return (kD * albedo / PI + spec) * radiance * NdotL;
 }
 
+// Fresnel with a roughness-aware ceiling (see mesh_pbr.glsl).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) *
+           pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Analytic split-sum specular BRDF approximation (Karis, UE4).
+vec3 envBRDFApprox(vec3 specularColor, float roughness, float NoV)
+{
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572,  0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.04,  -0.04);
+    vec4  r    = roughness * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2  AB   = vec2(-1.04, 1.04) * a004 + r.zw;
+    return specularColor * AB.x + AB.y;
+}
+
 // ===========================================================================
 // Height blend helper: sharpens transitions between layers
 // ===========================================================================
@@ -358,11 +376,22 @@ void main()
     // ----- Ambient ----------------------------------------------------------
     vec3 ambient = sceneAmbient * albedo * ao;
 
-    // Skybox ambient
+    // Skybox ambient — physically-based (split-sum IBL) so the terrain's
+    // metallic / roughness / normal (and per-layer AO) shape the result
+    // instead of the sky simply being overlaid.
     if (skyboxAmbientEnabled)
     {
-        vec3 skyColor = texture(skyboxMap, reflect(-v, N)).rgb;
-        ambient += skyColor * skyboxAmbientStrength * ao;
+        float NdotV = max(dot(N, v), 0.0);
+        vec3  R     = reflect(-v, N);
+        vec3  irradiance  = textureLod(skyboxMap, N, 8.0).rgb;
+        vec3  prefiltered = textureLod(skyboxMap, R, roughness * 6.0).rgb;
+
+        vec3 F_amb = fresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 kD    = (1.0 - F_amb) * (1.0 - metallic);
+
+        ambient += (kD * albedo * irradiance +
+                    prefiltered * envBRDFApprox(F0, roughness, NdotV)) *
+                   skyboxAmbientStrength * ao;
     }
 
     // ----- Final color ------------------------------------------------------

@@ -60,6 +60,20 @@ namespace kemena
         return createRendererOfType(window, type);
     }
 
+    kRenderer *createRendererSharedContext(kWindow *window, kDriver *sharedDriver)
+    {
+        if (sharedDriver == nullptr)
+            return nullptr;
+
+        kRenderer *renderer = new kRenderer;
+        renderer->setEngineInfo(engineName, engineVersion);
+        if (renderer->initShared(window, sharedDriver))
+            return renderer;
+
+        delete renderer;
+        return nullptr;
+    }
+
     kAssetManager *createAssetManager()
     {
         kAssetManager *manager = new kAssetManager();

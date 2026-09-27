@@ -83,6 +83,21 @@ namespace kemena
     KEMENA3D_API kRenderer *createRenderer(kWindow *window, kRendererType type);
 
     /**
+     * @brief Create and initialise a renderer that SHARES an existing driver.
+     *
+     * Intended for secondary viewports that render the same scene as another
+     * renderer (for example an in-editor game view): vertex-array objects are
+     * local to a GL context, so the second renderer must reuse the first
+     * renderer's context to draw its meshes. The returned renderer does NOT
+     * take ownership of @p sharedDriver — the owning renderer must outlive it.
+     *
+     * @param window       Window the shared driver belongs to.
+     * @param sharedDriver Driver to share (typically otherRenderer->getDriver()).
+     * @return Pointer to the initialised kRenderer, or nullptr on failure.
+     */
+    KEMENA3D_API kRenderer *createRendererSharedContext(kWindow *window, kDriver *sharedDriver);
+
+    /**
      * @brief Create a new asset manager.
      * @return Pointer to a newly allocated kAssetManager.
      */
