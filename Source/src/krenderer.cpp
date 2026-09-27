@@ -318,8 +318,10 @@ uniform vec3      diffuseColor;
 
 void main()
 {
+    // Albedo-only: unlit base colour. When a map is present the tint (default
+    // white) modulates it, matching the material's authored albedo.
     if (hasDebugTex)
-        fragColor = texture(debugTex, vTexCoord);
+        fragColor = vec4(diffuseColor * texture(debugTex, vTexCoord).rgb, 1.0);
     else
         fragColor = vec4(diffuseColor, 1.0);
 }
@@ -2332,27 +2334,86 @@ void main()
                     bones = mesh->getAnimator()->getFinalBoneMatrices();
                 shader->setValue("finalBonesMatrices", bones);
 
-                // Bind first texture as albedo hint (used by albedo mode).
-                bool hasTex = false;
-                if (mesh->getMaterial() && !mesh->getMaterial()->getTextures().empty())
+                // Resolve the material's albedo texture + tint for the albedo
+                // mode.
+                //
+                // Editor-authored materials store their surface maps as named
+                // `// @var` parameters (sampler2D albedoMap, vec3 tint /
+                // material.diffuse, ...) instead of the legacy kMaterial texture
+                // list, which is only populated by built-in materials (gizmos,
+                // skybox). Looking only at getTextures() made albedo mode fall
+                // back to the default white diffuse colour for every user
+                // material, so the map lookup below checks the params first.
+                kMaterial *dbgMat = mesh->getMaterial();
+                kTexture *albedoTex = nullptr;
+                kVec3 tint(1.0f, 1.0f, 1.0f);
+
+                if (dbgMat)
                 {
-                    kTexture *tex = mesh->getMaterial()->getTexture(0);
-                    if (tex && tex->getType() == kTextureType::TEX_TYPE_2D)
+                    static const char *kAlbedoSamplerNames[] = {
+                        "albedoMap", "albedo", "diffuseMap", "baseColorMap", "baseColor"};
+
+                    for (const char *samplerName : kAlbedoSamplerNames)
                     {
-                        driver->bindTexture2D(0, tex->getTextureID());
-                        shader->setValue("debugTex", 0);
-                        shader->setValue("hasDebugTex", true);
-                        hasTex = true;
+                        auto pit = dbgMat->getParams().find(samplerName);
+                        if (pit != dbgMat->getParams().end() &&
+                            pit->second.type == kMaterialParamType::SAMPLER2D &&
+                            pit->second.texture &&
+                            pit->second.texture->getType() == kTextureType::TEX_TYPE_2D)
+                        {
+                            albedoTex = pit->second.texture;
+                            break;
+                        }
                     }
+
+                    // Legacy texture list (built-in / gizmo / skybox materials).
+                    if (!albedoTex)
+                    {
+                        for (kTexture *tex : dbgMat->getTextures())
+                            if (tex && tex->getType() == kTextureType::TEX_TYPE_2D)
+                            {
+                                albedoTex = tex;
+                                break;
+                            }
+                    }
+
+                    // Tint: an explicit diffuse/tint parameter wins, then the
+                    // material's legacy diffuse colour field.
+                    auto paramVec3 = [&](const char *name, kVec3 &out) -> bool
+                    {
+                        auto it = dbgMat->getParams().find(name);
+                        if (it != dbgMat->getParams().end() &&
+                            it->second.type == kMaterialParamType::VEC3)
+                        {
+                            out = kVec3(it->second.value.x, it->second.value.y, it->second.value.z);
+                            return true;
+                        }
+                        return false;
+                    };
+                    if (!paramVec3("material.diffuse", tint) && !paramVec3("tint", tint))
+                        tint = dbgMat->getDiffuseColor();
                 }
-                if (!hasTex)
+
+                int albedoUnit = 0;
+                bool hasTex = (albedoTex != nullptr);
+                if (hasTex)
+                {
+                    // Resolve the sampler's unit (D3D11 pins samplers to fixed
+                    // registers; GL returns -1 and picks a free unit).
+                    int unit = driver->getTextureUnitForSampler(
+                        shader->getShaderProgram(), "debugTex");
+                    if (unit < 0)
+                        unit = 0;
+                    albedoUnit = unit;
+                    driver->bindTexture2D(albedoUnit, albedoTex->getTextureID());
+                    shader->setValue("debugTex", albedoUnit);
+                    shader->setValue("hasDebugTex", true);
+                }
+                else
                 {
                     shader->setValue("hasDebugTex", false);
-                    kVec3 diff = mesh->getMaterial()
-                                     ? mesh->getMaterial()->getDiffuseColor()
-                                     : kVec3(0.7f, 0.7f, 0.7f);
-                    shader->setValue("diffuseColor", diff);
                 }
+                shader->setValue("diffuseColor", tint);
 
                 driver->setBlend(false);
                 driver->setCullFace(false);
@@ -2366,7 +2427,7 @@ void main()
                     driver->setWireframe(false);
 
                 if (hasTex)
-                    driver->unbindTexture2D(0);
+                    driver->unbindTexture2D(albedoUnit);
 
                 shader->unuse();
             }
