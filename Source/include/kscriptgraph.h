@@ -206,6 +206,14 @@ namespace kemena
         LiteralInt,   ///< Constant int value.
         ConcatString, ///< Concatenates two strings.
 
+        // --- Animator variable getters (kept last to preserve serialised ids) --
+        GetAnimatorBool,  ///< Reads an animator Bool variable.
+        GetAnimatorFloat, ///< Reads an animator Float variable.
+        GetAnimatorInt,   ///< Reads an animator Int variable.
+
+        // --- Interpolation (kept last to preserve serialised ids) --------------
+        Lerp, ///< Moves a stored float toward a target over time at a set speed.
+
         Count ///< Sentinel (number of node types).
     };
 

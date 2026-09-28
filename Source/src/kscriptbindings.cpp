@@ -260,6 +260,9 @@ namespace kemena
     static void animatorSetInt(kAnimator *a, const kString &name, int value)      { if (a) a->setInt(name, value); }
     static void animatorSetIntFloat(kAnimator *a, const kString &name, float value) { if (a) a->setInt(name, (int)value); }
     static void animatorSetTrigger(kAnimator *a, const kString &name)             { if (a) a->setTrigger(name); }
+    static float animatorGetFloat(kAnimator *a, const kString &name)              { return a ? a->getVariable(name) : 0.0f; }
+    static bool  animatorGetBool(kAnimator *a, const kString &name)               { return a ? (a->getVariable(name) != 0.0f) : false; }
+    static int   animatorGetInt(kAnimator *a, const kString &name)                { return a ? (int)a->getVariable(name) : 0; }
 
     static float skeletalAnimGetDuration(kSkeletalAnimation *a)     { return a ? a->getDuration() : 0.0f; }
     static float skeletalAnimGetTicksPerSecond(kSkeletalAnimation *a) { return a ? a->getTicksPerSecond() : 0.0f; }
@@ -560,6 +563,12 @@ namespace kemena
                                     asFUNCTION(animatorSetIntFloat), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kAnimator", "void setTrigger(const string &in)",
                                     asFUNCTION(animatorSetTrigger), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "float getFloat(const string &in)",
+                                    asFUNCTION(animatorGetFloat), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "bool getBool(const string &in)",
+                                    asFUNCTION(animatorGetBool), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "int getInt(const string &in)",
+                                    asFUNCTION(animatorGetInt), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
         r = e->RegisterObjectMethod("kSkeletalAnimation", "float getDuration() const",
                                     asFUNCTION(skeletalAnimGetDuration), asCALL_CDECL_OBJFIRST); assert(r >= 0);

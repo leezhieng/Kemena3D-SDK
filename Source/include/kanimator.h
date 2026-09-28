@@ -87,6 +87,23 @@ namespace kemena
         /** @brief Current playback position in ticks. */
         float getCurrentTime() const { return currentTime; }
 
+        /**
+         * @brief Points the animator at the clip that feeds blend-tree root motion.
+         *
+         * A blend tree changes its root-motion source as the blend parameter moves
+         * between clips. Unlike playAnimation(), this does NOT reset the clip time
+         * or the root-motion tracker, so the accumulated delta keeps flowing and the
+         * character never stalls. When the source clip changes, the per-frame delta
+         * tracker is re-seeded to the new clip's root pose (so the switch itself
+         * contributes no motion) while the baked start-of-play reference is
+         * preserved (so the pose does not pop). The very first call seeds the
+         * reference normally.
+         *
+         * @param clip     Clip whose root channels drive this frame (no-op if null).
+         * @param clipTime Clip time in ticks at which to sample the root pose.
+         */
+        void setBlendRootSource(kSkeletalAnimation *clip, float clipTime);
+
         // --- Named controller variables -------------------------------------
         // The editor animator controller drives state transitions from named
         // variables (bool / float / int / trigger). Scripts can set them through

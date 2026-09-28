@@ -104,6 +104,10 @@ namespace kemena
             case kScriptNodeType::GetTag:             return "Get Tag";
             case kScriptNodeType::LiteralInt:         return "Int";
             case kScriptNodeType::ConcatString:       return "Concat String";
+            case kScriptNodeType::GetAnimatorBool:    return "Get Boolean";
+            case kScriptNodeType::GetAnimatorFloat:   return "Get Float";
+            case kScriptNodeType::GetAnimatorInt:     return "Get Integer";
+            case kScriptNodeType::Lerp:               return "Lerp";
             default:                                return "Node";
         }
     }
@@ -549,6 +553,35 @@ namespace kemena
                 in("Animator", kScriptPinType::Object);
                 in("Name", kScriptPinType::String);
                 out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::GetAnimatorBool:
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                out("Value", kScriptPinType::Bool);
+                break;
+
+            case kScriptNodeType::GetAnimatorFloat:
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                out("Value", kScriptPinType::Float);
+                break;
+
+            case kScriptNodeType::GetAnimatorInt:
+                in("Animator", kScriptPinType::Object);
+                in("Name", kScriptPinType::String);
+                out("Value", kScriptPinType::Int);
+                break;
+
+            case kScriptNodeType::Lerp:
+                in("", kScriptPinType::Exec);
+                in("Initial", kScriptPinType::Float);
+                in("Target", kScriptPinType::Float);
+                in("Speed", kScriptPinType::Float);
+                out("", kScriptPinType::Exec);
+                out("Value", kScriptPinType::Float);
+                defFloatPin("Initial", 0.0f);
+                defFloatPin("Speed", 1.0f);
                 break;
 
             // --- Physics -----------------------------------------------------
@@ -1240,6 +1273,18 @@ namespace kemena
                         return "getAnimator(" + emitNamedInput(n, "Target") + ")";
                     case kScriptNodeType::GetAnimatorSpeed:
                         return emitNamedInput(n, "Animator") + ".getSpeed()";
+                    case kScriptNodeType::GetAnimatorBool:
+                        return emitNamedInput(n, "Animator") + ".getBool(" +
+                               emitNamedInput(n, "Name") + ")";
+                    case kScriptNodeType::GetAnimatorFloat:
+                        return emitNamedInput(n, "Animator") + ".getFloat(" +
+                               emitNamedInput(n, "Name") + ")";
+                    case kScriptNodeType::GetAnimatorInt:
+                        return emitNamedInput(n, "Animator") + ".getInt(" +
+                               emitNamedInput(n, "Name") + ")";
+                    case kScriptNodeType::Lerp:
+                        // Output reads the per-node state global declared in compile().
+                        return "__lerp_" + std::to_string(n.id);
                     case kScriptNodeType::GetAnimatorRootMotionPosition:
                         return emitNamedInput(n, "Animator") + ".getRootMotionDeltaPosition()";
                     case kScriptNodeType::GetAnimatorRootMotionRotation:
@@ -1380,6 +1425,27 @@ namespace kemena
                         return "if (" + target + ".getCharacterController() !is null) " +
                                target + ".getCharacterController().move(" +
                                velocity + ");";
+                    }
+
+                    case kScriptNodeType::Lerp:
+                    {
+                        // Generic float interpolation: move the node's own stored
+                        // value toward Target at Speed units/second, never
+                        // overshooting, using the frame delta so it is frame-rate
+                        // independent. The result is exposed through the "Value"
+                        // output and can be wired anywhere (not animator-specific).
+                        const kString g    = "__lerp_" + std::to_string(n.id);
+                        const kString init = "__lerpinit_" + std::to_string(n.id);
+                        const kString d    = "_d" + std::to_string(n.id);
+                        const kString s    = "_s" + std::to_string(n.id);
+                        return "{ if (!" + init + ") { " + init + " = true; " + g + " = (" +
+                               emitNamedInput(n, "Initial") + "); } " +
+                               "float " + d + " = (" + emitNamedInput(n, "Target") +
+                               " - " + g + "); float " + s + " = (" +
+                               emitNamedInput(n, "Speed") + ") * getDeltaTime(); " +
+                               "if (" + d + " > " + s + ") " + d + " = " + s + "; " +
+                               "else if (" + d + " < -" + s + ") " + d + " = -" + s + "; " +
+                               g + " += " + d + "; }";
                     }
 
                     default:
@@ -1527,6 +1593,21 @@ namespace kemena
             code += varTypeDecl(v.type) + " " + v.name + " = " + varDefault(v) + ";\n";
         }
         if (!graph.variables.empty())
+            code += "\n";
+
+        // Per-node persistent state. A Lerp node needs somewhere to keep its
+        // running value between frames; emit one file-scope float per node.
+        bool emittedNodeState = false;
+        for (const auto &n : graph.nodes)
+        {
+            if (n.type == kScriptNodeType::Lerp)
+            {
+                code += "float __lerp_" + std::to_string(n.id) + " = 0.0f;\n";
+                code += "bool  __lerpinit_" + std::to_string(n.id) + " = false;\n";
+                emittedNodeState = true;
+            }
+        }
+        if (emittedNodeState)
             code += "\n";
 
         // Each event node becomes one lifecycle function.

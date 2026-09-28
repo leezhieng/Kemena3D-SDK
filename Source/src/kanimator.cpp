@@ -539,6 +539,43 @@ namespace kemena
         rootBoneName.clear();
     }
 
+    void kAnimator::setBlendRootSource(kSkeletalAnimation *clip, float clipTime)
+    {
+        if (clip == nullptr)
+            return;
+
+        const bool sourceChanged = (clip != rootBoneForAnim);
+
+        // Point at the source clip WITHOUT resetting time or root motion.
+        // playAnimation() would clear the tracker, which stalls the accumulated
+        // delta and makes the pose pop whenever the dominant clip flips.
+        currentAnimation = clip;
+        currentTime      = clipTime;
+
+        if (!sourceChanged)
+            return;
+
+        const bool firstEver = !rootBoneResolved;
+        resolveRootBoneFor(clip); // sets rootBoneName; clears rootMotionInitialized
+
+        if (firstEver)
+            return; // let the first handleRootMotion() seed the baked reference
+
+        // Re-seed the frame-to-frame tracker to the new clip's current root pose
+        // so the switch contributes zero delta; the baked reference is kept, so
+        // the pose stays where it is instead of jumping.
+        kBone *rootBone = clip->findBone(rootBoneName);
+        if (rootBone != nullptr)
+        {
+            rootBone->update(currentTime);
+            const kMat4 local = rootBone->getLocalTransform();
+            lastRootPos           = kVec3(local[3][0], local[3][1], local[3][2]);
+            lastRootRot           = kQuat(kMat3(local));
+            lastRootTime          = currentTime;
+            rootMotionInitialized = true;
+        }
+    }
+
     bool kAnimator::getRootMotionPositionXZ() const
     {
         return currentAnimation ? currentAnimation->getRootMotionPositionXZ() : false;
