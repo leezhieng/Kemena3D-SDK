@@ -1242,16 +1242,22 @@ kShaderCompileResult kShaderCompiler::compile(const kShaderGraph& graph)
     vec3 result = sceneAmbient * material.ambient;
     if (skyboxAmbientEnabled)
     {
-        // Material-aware skybox ambient — roughness derived from Phong
-        // shininess, specular reflection added un-tinted (see mesh_phong.glsl).
+        // Material-aware skybox ambient — the specular colour sets the
+        // dielectric reflectivity, the metallic factor tints the reflection
+        // toward the base colour and suppresses the diffuse term, and the
+        // Phong shininess drives the reflection blur (see mesh_phong.glsl).
         float _rough = clamp(1.0 - material.shininess / (material.shininess + 1.0), 0.04, 1.0);
         float _NdotV = max(dot(norm, vdir), 0.0);
         vec3  _R     = reflect(-vdir, norm);
         vec3  _irr   = textureLod(skyboxMap, norm, 8.0).rgb;
         vec3  _pre   = textureLod(skyboxMap, _R, _rough * 6.0).rgb;
-        vec3  _Famb  = fresnelSchlickRoughness(_NdotV, vec3(0.04), _rough);
-        result += (vec3(1.0) - _Famb) * _irr * skyboxAmbientStrength * material.ambient
-                + _pre * material.specular * envBRDFApprox(vec3(1.0), _rough, _NdotV) * skyboxAmbientStrength;
+        // Fresnel F0: 4% dielectric, blended toward the base colour for metals.
+        vec3  _F0    = mix(vec3(0.04), material.diffuse, material.metallic);
+        vec3  _Famb  = fresnelSchlickRoughness(_NdotV, _F0, _rough);
+        vec3  _kD    = (vec3(1.0) - _Famb) * (1.0 - material.metallic);
+        vec3  _tint  = mix(material.specular, material.diffuse, material.metallic);
+        result += _kD * material.diffuse * _irr * skyboxAmbientStrength * material.ambient
+                + _pre * _tint * envBRDFApprox(vec3(1.0), _rough, _NdotV) * skyboxAmbientStrength;
     }
 )";
         frag += "    vec3 _albedo   = " + albedo   + ";\n";
