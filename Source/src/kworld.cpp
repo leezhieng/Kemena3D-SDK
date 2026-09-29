@@ -1183,8 +1183,9 @@ namespace kemena
                 scene->setAmbientLightColor(kVec3(al.value("r", 0.1f), al.value("g", 0.1f), al.value("b", 0.1f)));
             }
             scene->setShadowsEnabled(sceneJson.value("shadows_enabled", true));
-            scene->setShadowBias(sceneJson.value("shadow_bias", 0.0008f));
-            scene->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.003f));
+            scene->setShadowBias(sceneJson.value("shadow_bias", 0.0006f));
+            scene->setShadowNormalBias(sceneJson.value("shadow_normal_bias", 0.0015f));
+            scene->setShadowNormalOffset(sceneJson.value("shadow_normal_offset", 1.5f));
             scene->setShadowMapResolution(sceneJson.value("shadow_map_resolution", 2048));
             scene->setShadowSoftness(sceneJson.value("shadow_softness", 1.5f));
             scene->setSkyboxAmbientEnabled(sceneJson.value("skybox_ambient_enabled", false));

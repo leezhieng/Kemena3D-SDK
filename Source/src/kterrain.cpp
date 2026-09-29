@@ -70,24 +70,29 @@ uniform bool skyboxAmbientEnabled; uniform float skyboxAmbientStrength;
 uniform mat4 viewMatrix;
 uniform sampler2DArray shadowMapArray;
 uniform mat4 lightSpaceMatrices[4];
-uniform vec4 cascadeSplits; uniform int cascadeCount; uniform bool enableShadow; uniform bool receiveShadow;
+uniform vec4 cascadeSplits; uniform int cascadeCount;
+uniform float shadowResolution; uniform bool enableShadow; uniform bool receiveShadow;
+uniform float shadowBias; uniform float shadowNormalBias; uniform float shadowNormalOffset; uniform float shadowSoftness;
 in vec3 v_worldPos; in vec2 v_texCoord; in vec3 v_N;
 out vec4 fragColor;
 float csmSplit(int i) { if(i==0)return cascadeSplits.x; if(i==1)return cascadeSplits.y; if(i==2)return cascadeSplits.z; return cascadeSplits.w; }
-float csmSample(int l, vec3 wp, float b) {
-    vec4 ls=lightSpaceMatrices[l]*vec4(wp,1.0); vec3 p=ls.xyz/ls.w; p=p*0.5+0.5;
-    if(p.z>1.0||p.x<0.0||p.x>1.0||p.y<0.0||p.y>1.0)return 0.0;
-    vec2 ts=1.0/vec2(textureSize(shadowMapArray,0).xy); float s=0.0;
+float csmTexelWorld(int l){ float m=abs(lightSpaceMatrices[l][0][0]); return (m>0.0)?2.0/(m*max(shadowResolution,1.0)):0.0; }
+float csmBias(vec3 n, vec3 l){ float ndl=max(dot(normalize(n),normalize(l)),0.0); return shadowBias+shadowNormalBias*min(tan(acos(max(ndl,1e-3))),8.0); }
+bool csmProject(int l, vec3 wp, out vec3 p){ vec4 ls=lightSpaceMatrices[l]*vec4(wp,1.0); p=ls.xyz/ls.w; p=p*0.5+0.5; return p.z<=1.0&&p.x>=0.0&&p.x<=1.0&&p.y>=0.0&&p.y<=1.0; }
+float csmPCF(int l, vec3 p, float b) {
+    vec2 ts=(1.0/vec2(textureSize(shadowMapArray,0).xy))*max(shadowSoftness,0.5); float s=0.0;
     for(int x=-1;x<=1;x++)for(int y=-1;y<=1;y++)s+=(p.z-b>texture(shadowMapArray,vec3(p.xy+vec2(x,y)*ts,l)).r)?1.0:0.0;
     return s/9.0;
 }
-float csmShadow(vec3 wp, vec3 n) {
-    if(!enableShadow||!receiveShadow)return 0.0;
-    float fd=abs((viewMatrix*vec4(wp,1.0)).z); int l=cascadeCount-1;
-    for(int i=0;i<cascadeCount;i++)if(fd<csmSplit(i)){l=i;break;}
-    float b=max(0.0025*(1.0-dot(normalize(n),vec3(0.0,1.0,0.0))),0.0004);
-    float sh=csmSample(l,wp,b); float sf=csmSplit(l); float band=sf*0.1;
-    if(l+1<cascadeCount&&fd>sf-band)sh=mix(sh,csmSample(l+1,wp,b),clamp((fd-(sf-band))/band,0.0,1.0));
+float csmShadow(vec3 wp, vec3 n, vec3 lightDir) {
+    if(!enableShadow||!receiveShadow||cascadeCount<=0)return 0.0;
+    vec3 l=normalize(-lightDir);
+    float fd=abs((viewMatrix*vec4(wp,1.0)).z); int layer=cascadeCount-1;
+    for(int i=0;i<cascadeCount;i++)if(fd<csmSplit(i)){layer=i;break;}
+    vec3 samplePos=wp+normalize(n)*(csmTexelWorld(layer)*shadowNormalOffset);
+    float b=csmBias(n,l); vec3 p; if(!csmProject(layer,samplePos,p))return 0.0;
+    float sh=csmPCF(layer,p,b); float sf=csmSplit(layer); float band=sf*0.1;
+    if(layer+1<cascadeCount&&fd>sf-band){ vec3 p2; if(csmProject(layer+1,samplePos,p2)){ float t=clamp((fd-(sf-band))/max(band,1e-4),0.0,1.0); sh=mix(sh,csmPCF(layer+1,p2,b),t); } }
     return sh;
 }
 const float PI=3.14159265359;
@@ -113,7 +118,7 @@ void main() {
     vec3 v = normalize(vec3(0.0)-v_worldPos);
     vec3 F0 = mix(vec3(0.04), albedo, material.metallic);
     vec3 Lo = vec3(0.0);
-    float shadow = csmShadow(v_worldPos, N);
+    float shadow = csmShadow(v_worldPos, N, sunLightNum > 0 ? sunLights[0].direction : vec3(0.0,-1.0,0.0));
     for(int i=0;i<sunLightNum;i++){vec3 l=normalize(-sunLights[i].direction);Lo+=calcPBR(albedo,material.metallic,material.roughness,F0,N,v,l,sunLights[i].diffuse*sunLights[i].power)*(1.0-shadow);}
     for(int i=0;i<pointLightNum;i++){vec3 l=normalize(pointLights[i].position-v_worldPos);float d=length(pointLights[i].position-v_worldPos);Lo+=calcPBR(albedo,material.metallic,material.roughness,F0,N,v,l,pointLights[i].diffuse/(pointLights[i].constant+pointLights[i].linear*d+pointLights[i].quadratic*d*d));}
     for(int i=0;i<spotLightNum;i++){vec3 l=normalize(spotLights[i].position-v_worldPos);float theta=dot(l,normalize(-spotLights[i].direction));float eps=spotLights[i].cutOff-spotLights[i].outerCutOff;float intens=clamp((theta-spotLights[i].outerCutOff)/eps,0.0,1.0);float d=length(spotLights[i].position-v_worldPos);Lo+=calcPBR(albedo,material.metallic,material.roughness,F0,N,v,l,spotLights[i].diffuse*intens/(spotLights[i].constant+spotLights[i].linear*d+spotLights[i].quadratic*d*d));}

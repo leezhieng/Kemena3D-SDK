@@ -753,8 +753,9 @@ void main()
         // set up — keep it 0 unless we actually have a shadow map this draw.
         shader->setValue("cascadeCount",     shadowsOn ? shadowCascadeCount : 0);
         shader->setValue("shadowResolution", (float)shadowResolution);
-        shader->setValue("shadowBias",       scene ? scene->getShadowBias()       : 0.0008f);
-        shader->setValue("shadowNormalBias", scene ? scene->getShadowNormalBias() : 0.003f);
+        shader->setValue("shadowBias",       scene ? scene->getShadowBias()       : 0.0006f);
+        shader->setValue("shadowNormalBias", scene ? scene->getShadowNormalBias() : 0.0015f);
+        shader->setValue("shadowNormalOffset", scene ? scene->getShadowNormalOffset() : 1.5f);
         shader->setValue("shadowSoftness",   scene ? scene->getShadowSoftness()   : 1.5f);
         shader->setValue("cascadeSplits",
             kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));

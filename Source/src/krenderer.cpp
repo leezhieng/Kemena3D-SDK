@@ -608,7 +608,9 @@ void main()
                     driver->setViewport(0, 0, shadowResolution, shadowResolution);
                     driver->clear(false, true, false);
                     shadowShader->use();
-                    renderSceneGraphShadow(world, scene, scene->getRootNode(), lightSpaceMatrices[cascade], deltaTime);
+                    renderSceneGraphShadow(world, scene, scene->getRootNode(),
+                                           lightSpaceMatrices[cascade], lightView,
+                                           radius, zExtent, deltaTime);
                     shadowShader->unuse();
                 }
             }
@@ -1034,6 +1036,7 @@ void main()
                     shader->setValue("receiveShadow", currentMesh->getReceiveShadow());
                     shader->setValue("shadowBias", shadowBias);
                     shader->setValue("shadowNormalBias", shadowNormalBias);
+                    shader->setValue("shadowNormalOffset", shadowNormalOffset);
                     shader->setValue("shadowSoftness", shadowSoftness);
 
                     // Material textures
@@ -1575,7 +1578,8 @@ void main()
     }
 
     void kRenderer::renderSceneGraphShadow(kWorld *world, kScene *scene, kObject *currentNode,
-                                           const kMat4 &lightSpaceMatrix, float deltaTime)
+                                           const kMat4 &lightSpaceMatrix, const kMat4 &lightView,
+                                           float lightRadius, float lightZExtent, float deltaTime)
     {
         if (currentNode == nullptr || !currentNode->getActive())
             return;
@@ -1586,7 +1590,37 @@ void main()
         {
             kMesh *currentMesh = (kMesh *)currentNode;
 
-            if (currentMesh->getCastShadow())
+            // Cascade culling (see header): reject casters whose world AABB
+            // lies fully outside this cascade's light-space box. Skinned meshes
+            // are exempt — their local AABB is the rest pose, which can be far
+            // smaller than the animated pose, so culling them risks dropout.
+            bool inCascade = true;
+            if (currentMesh->getCastShadow() && !currentMesh->getSkinned() &&
+                currentMesh->getLocalAABB().isValid())
+            {
+                kAABB wb = currentMesh->getWorldAABB();
+                const float margin = lightRadius * 0.02f + 0.01f;
+                float mnx =  1e30f, mxx = -1e30f;
+                float mny =  1e30f, mxy = -1e30f;
+                float mnz =  1e30f, mxz = -1e30f;
+                for (int c = 0; c < 8; ++c)
+                {
+                    kVec3 p((c & 1) ? wb.max.x : wb.min.x,
+                            (c & 2) ? wb.max.y : wb.min.y,
+                            (c & 4) ? wb.max.z : wb.min.z);
+                    kVec4 lp = lightView * kVec4(p, 1.0f);
+                    mnx = std::min(mnx, lp.x); mxx = std::max(mxx, lp.x);
+                    mny = std::min(mny, lp.y); mxy = std::max(mxy, lp.y);
+                    mnz = std::min(mnz, lp.z); mxz = std::max(mxz, lp.z);
+                }
+                // Ortho box is x,y ∈ [-R, R] and z ∈ [-2Z, 0] (light looks
+                // down -Z, eye sits Z behind the slice centre).
+                inCascade = !(mxx < -lightRadius - margin || mnx > lightRadius + margin ||
+                              mxy < -lightRadius - margin || mny > lightRadius + margin ||
+                              mxz < -2.0f * lightZExtent - margin || mnz > margin);
+            }
+
+            if (currentMesh->getCastShadow() && inCascade)
             {
                 shadowShader->setValue("lightSpaceMatrix", lightSpaceMatrix);
                 shadowShader->setValue("modelMatrix", currentMesh->getModelMatrixWorld());
@@ -1632,7 +1666,8 @@ void main()
         {
             if (currentNode->getChildren().at(i) != nullptr)
                 renderSceneGraphShadow(world, scene, currentNode->getChildren().at(i),
-                                       lightSpaceMatrix, deltaTime);
+                                       lightSpaceMatrix, lightView, lightRadius, lightZExtent,
+                                       deltaTime);
         }
     }
 

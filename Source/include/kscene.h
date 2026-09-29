@@ -264,9 +264,25 @@ namespace kemena
 
         /**
          * @brief Sets the slope-scaled component of the shadow bias.
-         *        Multiplied by (1 - N·L); only affects grazing-angle surfaces.
+         *        Multiplied by tan(acos(N·L)); only affects grazing-angle surfaces.
          */
         void setShadowNormalBias(float bias);
+
+        /**
+         * @brief Returns the normal-offset distance, in shadow-map texels.
+         */
+        float getShadowNormalOffset() const;
+
+        /**
+         * @brief Sets the normal-offset distance, in shadow-map texels.
+         *
+         * Before the depth comparison each receiver is pushed along its own
+         * normal by this many shadow-map texels (the texel's world size is
+         * derived from the light matrix). This removes contact-shadow acne the
+         * way a depth bias does, but without detaching the shadow from its
+         * caster (peter-panning). 0 disables the technique.
+         */
+        void setShadowNormalOffset(float offset);
 
         /**
          * @brief Returns the per-cascade shadow map resolution in pixels.
@@ -361,8 +377,9 @@ namespace kemena
         kVec3 ambientLightColor = kVec3(0.1f, 0.1f, 0.1f); ///< Scene ambient colour.
 
         bool  shadowsEnabled        = true;   ///< Render shadows for this scene.
-        float shadowBias            = 0.0008f;///< Constant shadow depth bias.
-        float shadowNormalBias      = 0.003f; ///< Slope-scaled component of shadow bias.
+        float shadowBias            = 0.0006f;///< Constant shadow depth bias.
+        float shadowNormalBias      = 0.0015f;///< Slope-scaled component of shadow bias.
+        float shadowNormalOffset    = 1.5f;   ///< Normal-offset distance in shadow-map texels.
         int   shadowMapResolution   = 2048;   ///< Per-cascade shadow map size in pixels.
         float shadowSoftness        = 1.5f;   ///< PCF tap spacing in shadow-map texels.
         bool  skyboxAmbientEnabled  = false;  ///< Enable skybox IBL ambient.

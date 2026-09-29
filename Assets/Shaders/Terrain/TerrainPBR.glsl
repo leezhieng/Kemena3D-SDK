@@ -110,8 +110,13 @@ uniform sampler2DArray shadowMapArray;
 uniform mat4           lightSpaceMatrices[4];
 uniform vec4           cascadeSplits;
 uniform int            cascadeCount;
+uniform float          shadowResolution;
 uniform bool           enableShadow;
 uniform bool           receiveShadow;
+uniform float          shadowBias;
+uniform float          shadowNormalBias;
+uniform float          shadowNormalOffset;
+uniform float          shadowSoftness;
 
 // ===========================================================================
 // Terrain textures
@@ -136,6 +141,10 @@ out vec4 fragColor;
 
 // ===========================================================================
 // CSM shadow map helpers
+//
+// Follows the Microsoft DX tech articles: normal-offset sampling, constant +
+// slope-scaled receiver bias, softness-driven PCF, and a smooth blend across
+// the cascade boundary.
 // ===========================================================================
 float csmSplit(int i)
 {
@@ -145,14 +154,31 @@ float csmSplit(int i)
     return cascadeSplits.w;
 }
 
-float csmSample(int layer, vec3 wp, float bias)
+// World-space size of one shadow-map texel for a cascade (light ortho [0][0]==1/radius).
+float csmTexelWorld(int layer)
+{
+    float m = abs(lightSpaceMatrices[layer][0][0]);
+    return (m > 0.0) ? 2.0 / (m * max(shadowResolution, 1.0)) : 0.0;
+}
+
+// Constant + slope-scaled receiver bias (clamped tan(acos(N·L))).
+float csmBias(vec3 n, vec3 l)
+{
+    float ndl = max(dot(normalize(n), normalize(l)), 0.0);
+    return shadowBias + shadowNormalBias * min(tan(acos(max(ndl, 1e-3))), 8.0);
+}
+
+bool csmProject(int layer, vec3 wp, out vec3 p)
 {
     vec4 ls = lightSpaceMatrices[layer] * vec4(wp, 1.0);
-    vec3 p  = ls.xyz / ls.w;
+    p = ls.xyz / ls.w;
     p = p * 0.5 + 0.5;
-    if (p.z > 1.0 || p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0)
-        return 0.0;
-    vec2 ts = 1.0 / vec2(textureSize(shadowMapArray, 0).xy);
+    return p.z <= 1.0 && p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0;
+}
+
+float csmPCF(int layer, vec3 p, float bias)
+{
+    vec2 ts = (1.0 / vec2(textureSize(shadowMapArray, 0).xy)) * max(shadowSoftness, 0.5);
     float s = 0.0;
     for (int x = -1; x <= 1; x++)
         for (int y = -1; y <= 1; y++)
@@ -160,19 +186,31 @@ float csmSample(int layer, vec3 wp, float bias)
     return s / 9.0;
 }
 
-float csmShadow(vec3 wp, vec3 n)
+float csmShadow(vec3 wp, vec3 n, vec3 lightDir)
 {
-    if (!enableShadow || !receiveShadow) return 0.0;
+    if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
+    vec3 l = normalize(-lightDir);
     float fd = abs((viewMatrix * vec4(wp, 1.0)).z);
     int layer = cascadeCount - 1;
     for (int i = 0; i < cascadeCount; i++)
         if (fd < csmSplit(i)) { layer = i; break; }
-    float bias = max(0.0025 * (1.0 - dot(normalize(n), vec3(0.0, 1.0, 0.0))), 0.0004);
-    float sh = csmSample(layer, wp, bias);
+    // Normal-offset, then constant + slope-scaled depth bias.
+    vec3 samplePos = wp + normalize(n) * (csmTexelWorld(layer) * shadowNormalOffset);
+    float bias = csmBias(n, l);
+    vec3 p;
+    if (!csmProject(layer, samplePos, p)) return 0.0;
+    float sh = csmPCF(layer, p, bias);
     float sf = csmSplit(layer);
     float band = sf * 0.1;
     if (layer + 1 < cascadeCount && fd > sf - band)
-        sh = mix(sh, csmSample(layer + 1, wp, bias), clamp((fd - (sf - band)) / band, 0.0, 1.0));
+    {
+        vec3 p2;
+        if (csmProject(layer + 1, samplePos, p2))
+        {
+            float t = clamp((fd - (sf - band)) / max(band, 1e-4), 0.0, 1.0);
+            sh = mix(sh, csmPCF(layer + 1, p2, bias), t);
+        }
+    }
     return sh;
 }
 
@@ -341,7 +379,8 @@ void main()
     vec3 Lo    = vec3(0.0);
 
     // Sun lights (directional)
-    float shadow = csmShadow(v_worldPos, N);
+    float shadow = csmShadow(v_worldPos, N,
+                             sunLightNum > 0 ? sunLights[0].direction : vec3(0.0, -1.0, 0.0));
     for (int i = 0; i < sunLightNum; i++)
     {
         vec3 l = normalize(-sunLights[i].direction);

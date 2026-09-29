@@ -158,6 +158,16 @@ namespace kemena
         shadowNormalBias = bias;
     }
 
+    float kScene::getShadowNormalOffset() const
+    {
+        return shadowNormalOffset;
+    }
+
+    void kScene::setShadowNormalOffset(float offset)
+    {
+        shadowNormalOffset = offset;
+    }
+
     int kScene::getShadowMapResolution() const
     {
         return shadowMapResolution;
@@ -313,6 +323,7 @@ namespace kemena
                 {"shadows_enabled", shadowsEnabled},
                 {"shadow_bias", shadowBias},
                 {"shadow_normal_bias", shadowNormalBias},
+                {"shadow_normal_offset", shadowNormalOffset},
                 {"shadow_map_resolution", shadowMapResolution},
                 {"shadow_softness", shadowSoftness},
                 {"skybox_ambient_enabled", skyboxAmbientEnabled},

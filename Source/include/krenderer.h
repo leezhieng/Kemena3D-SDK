@@ -260,6 +260,11 @@ namespace kemena
         /** @brief Returns the slope-scaled shadow bias. */
         float getShadowNormalBias() const { return shadowNormalBias; }
 
+        /** @brief Sets the normal-offset distance (shadow-map texels) passed to lit shaders. */
+        void  setShadowNormalOffset(float offset) { shadowNormalOffset = offset; }
+        /** @brief Returns the normal-offset distance in shadow-map texels. */
+        float getShadowNormalOffset() const { return shadowNormalOffset; }
+
         /** @brief Sets the PCF tap spacing (in shadow-map texels) passed to lit shaders. */
         void  setShadowSoftness(float softness) { shadowSoftness = softness; }
         /** @brief Returns the PCF tap spacing. */
@@ -537,14 +542,25 @@ namespace kemena
 
         /**
          * @brief Recursively renders the scene graph into a cascade shadow-map FBO.
+         *
+         * Meshes whose (unskinned) world AABB lies fully outside the cascade's
+         * light-space box are skipped, so a distant cascade never pays for
+         * geometry it cannot capture ("Cascaded Shadow Maps", Microsoft DX
+         * article — cull objects outside the cascade).
+         *
          * @param world            World containing the camera.
          * @param scene            Active scene.
          * @param rootNode         Current node to process.
          * @param lightSpaceMatrix Combined light projection*view matrix for this cascade.
+         * @param lightView        View matrix of the light for this cascade (culling).
+         * @param lightRadius      Half-width/height of the light's ortho box (culling).
+         * @param lightZExtent     Half-depth of the light's ortho box (culling).
          * @param deltaTime        Frame delta time in seconds.
          */
         void renderSceneGraphShadow(kWorld *world, kScene *scene, kObject *rootNode,
                                     const kMat4 &lightSpaceMatrix,
+                                    const kMat4 &lightView,
+                                    float lightRadius, float lightZExtent,
                                     float deltaTime = 0.0f);
 
         /**
@@ -575,8 +591,9 @@ namespace kemena
         int      shadowCascadeCount = 3;      ///< Active cascades (1..kMaxShadowCascades).
         float    shadowSplitLambda  = 0.85f;  ///< 0 = uniform splits, 1 = logarithmic.
         bool     shadowDebug        = false;  ///< Tint fragments by cascade for debugging.
-        float    shadowBias         = 0.0008f;///< Constant shadow bias (passed to lit shaders).
-        float    shadowNormalBias   = 0.003f; ///< Slope-scaled shadow bias (passed to lit shaders).
+        float    shadowBias         = 0.0006f;///< Constant shadow bias (passed to lit shaders).
+        float    shadowNormalBias   = 0.0015f;///< Slope-scaled shadow bias (passed to lit shaders).
+        float    shadowNormalOffset = 1.5f;   ///< Normal-offset distance in shadow-map texels.
         float    shadowSoftness     = 1.5f;   ///< PCF tap spacing in shadow-map texels.
         uint32_t shadowFbo          = 0;      ///< Single FBO; layer re-attached per cascade.
         uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
