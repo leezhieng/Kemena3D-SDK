@@ -9,9 +9,20 @@
  * editor project (as an out-of-line member definition) to avoid rebuilding the
  * SDK; it is now a normal part of the Kemena3DSDK library so the animator's
  * blend path ships with the engine.
+ *
+ * The pass evaluates each node in two layers:
+ *
+ *   1. **Base layer** — every non-additive sample whose mask covers the bone is
+ *      blended by weight (partial animation). A bone no base sample covers keeps
+ *      the skeleton's rest pose.
+ *   2. **Additive layer** — every additive sample layers (pose - reference)
+ *      * weight on top of the base result.
  */
 
 #include "kemena.h"
+
+#include "kanimationmask.h"
+#include "kadditiveanimation.h"
 
 #include <glm/gtc/quaternion.hpp>
 
@@ -40,6 +51,17 @@ namespace kemena
             rot[1] = (scale.y > 1e-6f) ? kVec3(m[1]) / scale.y : kVec3(m[1]);
             rot[2] = (scale.z > 1e-6f) ? kVec3(m[2]) / scale.z : kVec3(m[2]);
             rotation = kQuat(rot);
+        }
+
+        /**
+         * @brief Whether a sample is allowed to drive @p boneName.
+         *
+         * A null mask (or an empty/identity mask) covers the whole skeleton, so
+         * callers that don't use partial animation see no behaviour change.
+         */
+        bool maskAllowsBone(const kAnimationMask *mask, const kString &boneName)
+        {
+            return mask == nullptr || mask->isBoneActive(boneName);
         }
 
         // Per-(animator, clip) root-motion tracking used by the blend-tree pose
@@ -130,6 +152,11 @@ namespace kemena
         // fall to zero as a moving motion is blended out toward a non-moving
         // one (idle) — the character then stops together with the animation
         // instead of sliding until the last root-bearing clip's weight hits 0.
+        //
+        // Only the *base* (non-additive) samples define the pinned root pose;
+        // additive samples still contribute their own root displacement to the
+        // accumulated delta. Samples whose mask excludes the root bone are
+        // skipped entirely.
         // -----------------------------------------------------------------
         bool rootMotionApplied = false;
         if (!rootBoneName.empty() && node->name == rootBoneName)
@@ -139,7 +166,7 @@ namespace kemena
 
             kVec3  accumDeltaPos(0.0f);
             kVec3  accumDeltaRot(0.0f);
-            float  posSpeedSum = 0.0f; ///< Σ weight·|clip delta| over the enabled position channels.
+            float  posSpeedSum = 0.0f; ///< Sum weight*|clip delta| over the enabled position channels.
             kVec3  posAccum(0.0f);
             kVec3  scaleAccum(0.0f);
             kQuat  rotAccum(0.0f, 0.0f, 0.0f, 0.0f);
@@ -152,7 +179,13 @@ namespace kemena
             {
                 if (s.animation == nullptr || s.weight <= 0.0f)
                     continue;
+                // Partial animation: a sample whose mask excludes the root bone
+                // must not contribute to the root pose or its displacement.
+                if (!maskAllowsBone(s.mask, node->name))
+                    continue;
+
                 kSkeletalAnimation *anim = s.animation;
+                const bool additiveSample = (s.additive != nullptr);
                 const bool aXZ = anim->getRootMotionPositionXZ();
                 const bool aY  = anim->getRootMotionPositionY();
                 const bool aR  = anim->getRootMotionRotation();
@@ -165,19 +198,23 @@ namespace kemena
                 // channel matches what setBlendRootSource()/handleRootMotion()
                 // pinhole. Kept separate from the motion delta below, because the
                 // pin bone and the per-clip translation bone are not always the
-                // same node.
-                if (kBone *poseBone = anim->findBone(node->name))
+                // same node. Additive samples are deltas, not base poses, so they
+                // are excluded here.
+                if (!additiveSample)
                 {
-                    poseBone->update(s.time);
-                    kVec3 pt, psc;
-                    kQuat pr;
-                    blendDecomposeTRS(poseBone->getLocalTransform(), pt, pr, psc);
-                    if (!haveRef) { rotRef = pr; haveRef = true; }
-                    else if (glm::dot(pr, rotRef) < 0.0f) pr = -pr;
-                    posAccum   += pt  * s.weight;
-                    scaleAccum += psc * s.weight;
-                    rotAccum   += pr  * s.weight;
-                    weightSum  += s.weight;
+                    if (kBone *poseBone = anim->findBone(node->name))
+                    {
+                        poseBone->update(s.time);
+                        kVec3 pt, psc;
+                        kQuat pr;
+                        blendDecomposeTRS(poseBone->getLocalTransform(), pt, pr, psc);
+                        if (!haveRef) { rotRef = pr; haveRef = true; }
+                        else if (glm::dot(pr, rotRef) < 0.0f) pr = -pr;
+                        posAccum   += pt  * s.weight;
+                        scaleAccum += psc * s.weight;
+                        rotAccum   += pr  * s.weight;
+                        weightSum  += s.weight;
+                    }
                 }
 
                 // ---- Per-clip root-motion delta -------------------------------
@@ -293,55 +330,106 @@ namespace kemena
             }
         }
 
-        kVec3 posAccum(0.0f);
-        kVec3 scaleAccum(0.0f);
-        kQuat rotAccum(0.0f, 0.0f, 0.0f, 0.0f);
-        kQuat rotRef(1.0f, 0.0f, 0.0f, 0.0f);
-        float totalWeight = 0.0f;
-        bool  haveRef     = false;
-
         if (!rootMotionApplied)
-        for (const kPoseSample &s : samples)
         {
-            if (s.animation == nullptr || s.weight <= 0.0f)
-                continue;
+            // -----------------------------------------------------------------
+            // Layer 1 — BASE: weighted average of every non-additive sample that
+            // its mask allows to drive this bone (partial animation).
+            //
+            // A bone excluded by all base masks (or absent from every clip) keeps
+            // the skeleton's rest pose instead of collapsing toward identity, so
+            // a masked blend cleanly layers one region over another.
+            // -----------------------------------------------------------------
+            kVec3 posAccum(0.0f);
+            kVec3 scaleAccum(0.0f);
+            kQuat rotAccum(0.0f, 0.0f, 0.0f, 0.0f);
+            kQuat rotRef(1.0f, 0.0f, 0.0f, 0.0f);
+            float totalWeight = 0.0f;
+            bool  haveRef     = false;
 
-            kBone *bone = s.animation->findBone(node->name);
-            if (bone == nullptr)
-                continue;
+            for (const kPoseSample &s : samples)
+            {
+                if (s.weight <= 0.0f || s.additive != nullptr)
+                    continue;
+                if (!maskAllowsBone(s.mask, node->name))
+                    continue;
 
-            bone->update(s.time);
+                kVec3 t, sc;
+                kQuat r;
+                if (s.restPose)
+                {
+                    // Weighted masking: contribute the skeleton's rest (bind)
+                    // pose for this bone. Paired with a clip sample that carries
+                    // mask weight w and rest weight (1 - w) on the same mask this
+                    // makes w an absolute "how strongly does this state drive
+                    // these bones" control — no clip lookup / time advance here.
+                    blendDecomposeTRS(node->transformation, t, r, sc);
+                }
+                else
+                {
+                    if (s.animation == nullptr)
+                        continue;
 
-            kVec3 t, sc;
-            kQuat r;
-            blendDecomposeTRS(bone->getLocalTransform(), t, r, sc);
+                    kBone *bone = s.animation->findBone(node->name);
+                    if (bone == nullptr)
+                        continue;
 
-            // Keep every contribution on the same quaternion hemisphere as the
-            // first one, otherwise opposite-sign quaternions cancel out.
-            if (!haveRef) { rotRef = r; haveRef = true; }
-            else if (glm::dot(r, rotRef) < 0.0f) r = -r;
+                    bone->update(s.time);
 
-            posAccum    += t * s.weight;
-            scaleAccum  += sc * s.weight;
-            rotAccum    += r * s.weight;
-            totalWeight += s.weight;
-        }
+                    blendDecomposeTRS(bone->getLocalTransform(), t, r, sc);
+                }
 
-        if (totalWeight > 1e-6f)
-        {
-            const kVec3 pos    = posAccum / totalWeight;
-            const kVec3 scale  = scaleAccum / totalWeight;
-            const float rotLen = glm::length(rotAccum);
-            const kQuat rot    = (rotLen > 1e-6f) ? (rotAccum / rotLen) : rotRef;
+                // Keep every contribution on the same quaternion hemisphere as the
+                // first one, otherwise opposite-sign quaternions cancel out.
+                if (!haveRef) { rotRef = r; haveRef = true; }
+                else if (glm::dot(r, rotRef) < 0.0f) r = -r;
 
-            // Compose T * R * S without glm::translate/scale so this file does
-            // not need the matrix_transform extension included.
-            kMat4 composed(1.0f);
-            composed[0] = kVec4(rot * kVec3(scale.x, 0.0f, 0.0f), 0.0f);
-            composed[1] = kVec4(rot * kVec3(0.0f, scale.y, 0.0f), 0.0f);
-            composed[2] = kVec4(rot * kVec3(0.0f, 0.0f, scale.z), 0.0f);
-            composed[3] = kVec4(pos, 1.0f);
-            nodeTransform = composed;
+                posAccum    += t * s.weight;
+                scaleAccum  += sc * s.weight;
+                rotAccum    += r * s.weight;
+                totalWeight += s.weight;
+            }
+
+            if (totalWeight > 1e-6f)
+            {
+                const kVec3 pos    = posAccum / totalWeight;
+                const kVec3 scale  = scaleAccum / totalWeight;
+                const float rotLen = glm::length(rotAccum);
+                const kQuat rot    = (rotLen > 1e-6f) ? (rotAccum / rotLen) : rotRef;
+
+                // Compose T * R * S without glm::translate/scale so this file does
+                // not need the matrix_transform extension included.
+                kMat4 composed(1.0f);
+                composed[0] = kVec4(rot * kVec3(scale.x, 0.0f, 0.0f), 0.0f);
+                composed[1] = kVec4(rot * kVec3(0.0f, scale.y, 0.0f), 0.0f);
+                composed[2] = kVec4(rot * kVec3(0.0f, 0.0f, scale.z), 0.0f);
+                composed[3] = kVec4(pos, 1.0f);
+                nodeTransform = composed;
+            }
+            else
+            {
+                // No base contribution for this bone — keep the rest pose.
+                nodeTransform = node->transformation;
+            }
+
+            // -----------------------------------------------------------------
+            // Layer 2 — ADDITIVE: layer each additive sample's (pose - reference)
+            // delta on top of the base result. Deltas are applied in sample order;
+            // a bone the additive clip does not reference (or whose wrapper has no
+            // baked reference) contributes an identity delta and is a no-op.
+            // -----------------------------------------------------------------
+            for (const kPoseSample &s : samples)
+            {
+                if (s.additive == nullptr || s.weight <= 0.0f)
+                    continue;
+                if (!maskAllowsBone(s.mask, node->name))
+                    continue;
+                if (!s.additive->isBuilt())
+                    continue;
+
+                const kMat4 delta = s.additive->sampleDeltaMatrix(node->name, s.time);
+                nodeTransform = kAdditiveAnimation::applyDelta(nodeTransform, delta, s.weight);
+            }
         }
 
         kMat4 globalTransformation = parentTransform * nodeTransform;

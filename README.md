@@ -69,6 +69,48 @@ float move = input->getAxis("MoveX"); // -1.0 .. 1.0
 
 See [`kinputmanager.h`](Source/include/kinputmanager.h) for the full API.
 
+## Animation
+
+Skeletal clips (`kSkeletalAnimation`) are played by a `kAnimator`, which can
+combine several clips into one pose. Alongside two-clip cross-fades it supports
+**partial** and **additive** blending.
+
+**Partial animation** — a `kAnimationMask` restricts a clip to a subset of the
+skeleton, so (for example) an upper-body clip can play over a full-body one:
+
+```cpp
+kAnimationMask upperBody("UpperBody");
+upperBody.buildFromSkeleton(clip->getRootNode());
+upperBody.setBodyPartEnabled(kAvatarBodyPart::LeftArm,  true);
+upperBody.setBodyPartEnabled(kAvatarBodyPart::RightArm, true);
+upperBody.setBodyPartEnabled(kAvatarBodyPart::Head,     true);
+
+kPoseSample s;
+s.animation = upperBodyClip;
+s.time      = t;
+s.weight    = 1.0f;
+s.mask      = &upperBody; // bones outside the mask keep the base pose
+```
+
+**Additive animation** — a `kAdditiveAnimation` bakes a reference pose and
+supplies a relative delta that is layered on top of the base pose, ideal for hit
+reacts, leans or aim offsets:
+
+```cpp
+kAdditiveAnimation lean;
+lean.setClip(leanClip);
+lean.buildFromClip(baseClip, 0.0f); // bake the base clip's frame 0 as reference
+
+kPoseSample a;
+a.animation = leanClip;
+a.time      = t;
+a.weight    = 0.5f;
+a.additive  = &lean; // (pose - reference) * weight layered over the base
+```
+
+See [`kanimationmask.h`](Source/include/kanimationmask.h) and
+[`kadditiveanimation.h`](Source/include/kadditiveanimation.h) for the full API.
+
 ## Asset Packaging
 
 The SDK includes a built-in asset packaging system for game distribution. Assets are bundled into a single `.kpak` file with optional per-file compression (LZNT1 on Windows). The Virtual File System (`kFileSystem`) transparently handles both packaged and loose-file modes.

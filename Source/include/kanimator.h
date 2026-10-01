@@ -20,6 +20,8 @@ namespace kemena
     class kSkeletalAnimation;
     class kAnimation;
     class kMesh;
+    class kAnimationMask;
+    class kAdditiveAnimation;
 
     /**
      * @brief One weighted clip sample used by kAnimator::calculateBlendedBoneTransform().
@@ -27,12 +29,34 @@ namespace kemena
      * Blend-tree playback feeds an arbitrary set of these (all belonging to the
      * same skeleton) so the animator can blend every one of their poses in a
      * single hierarchy traversal.
+     *
+     * A sample supports three optional modifiers:
+     *
+     *   * @ref mask — **partial animation**. When set, only bones flagged active
+     *     in the mask contribute this sample's pose; every other bone is left to
+     *     the remaining samples (or the rest pose). This is how an upper-body
+     *     clip is layered over a full-body one.
+     *   * @ref additive — **additive animation**. When set, the sample no longer
+     *     replaces the base pose: it contributes @c (pose - reference) * weight
+     *     layered on top of the base pose (position/scale additive, rotation
+     *     multiplicative). @ref animation must still name the clip to sample;
+     *     @ref additive supplies the baked reference pose.
+     *   * @ref restPose — **weighted masking**. When set, the sample contributes
+     *     the skeleton's *rest* (bind) pose for the bones its @ref mask allows,
+     *     instead of sampling a clip. @ref animation is ignored. Pairing a clip
+     *     sample with mask weight @c w and a rest-pose sample with mask weight
+     *     @c (1 - w) over the same mask makes @c w behave as an absolute "how
+     *     strongly does this state drive these bones" control (w = 0 → the state
+     *     leaves the region at rest, w = 1 → the clip fully drives it).
      */
     struct kPoseSample
     {
-        kSkeletalAnimation *animation = nullptr; ///< Clip to sample.
-        float               time      = 0.0f;    ///< Clip time in ticks.
-        float               weight    = 0.0f;    ///< Blend weight (relative; normalized internally).
+        kSkeletalAnimation *animation = nullptr;  ///< Clip to sample (ignored when @ref restPose).
+        float               time      = 0.0f;     ///< Clip time in ticks.
+        float               weight    = 0.0f;     ///< Blend weight (relative; normalized internally).
+        const kAnimationMask   *mask     = nullptr; ///< Partial-blend mask (nullptr = whole skeleton).
+        kAdditiveAnimation     *additive = nullptr; ///< When set, sample is blended additively.
+        bool                    restPose = false;   ///< When set, contributes the rest pose (weighted masking).
     };
 
     /**
@@ -194,6 +218,38 @@ namespace kemena
                         kSkeletalAnimation *to, float toTicks, float duration);
 
         /**
+         * @brief Starts a *partial* cross-fade that only blends a bone subset.
+         *
+         * Bones flagged active in @p mask cross-fade from the source clip to the
+         * destination clip; every other bone follows the destination clip
+         * immediately. This lets a transition touch, for example, only the upper
+         * body while the lower body keeps running the destination locomotion.
+         *
+         * The mask is borrowed — the caller keeps ownership and must keep it
+         * alive for the duration of the blend (pass nullptr for a full-body
+         * cross-fade, identical to the other overload).
+         *
+         * @param from      Source clip (already playing). May be nullptr.
+         * @param fromTicks Source clip time in ticks at the start of the blend.
+         * @param to        Destination clip — becomes the active clip.
+         * @param toTicks   Destination clip time in ticks at the start of the blend.
+         * @param duration  Cross-fade duration in seconds (> 0 to blend).
+         * @param mask      Bones allowed to blend (nullptr = all bones).
+         */
+        void beginBlend(kSkeletalAnimation *from, float fromTicks,
+                        kSkeletalAnimation *to, float toTicks, float duration,
+                        const kAnimationMask *mask);
+
+        /**
+         * @brief Sets (or clears) the mask used by the active cross-fade.
+         * @param mask Bones allowed to blend; nullptr restores a full-body fade.
+         */
+        void setBlendMask(const kAnimationMask *mask) { blendMask = mask; }
+
+        /** @brief Mask currently governing the cross-fade (nullptr = full body). */
+        const kAnimationMask *getBlendMask() const { return blendMask; }
+
+        /**
          * @brief Advances the active cross-fade by @p dt seconds.
          * @return True while the cross-fade is still running.
          */
@@ -284,6 +340,7 @@ namespace kemena
 
         // Cross-fade (state transition) state.
         kSkeletalAnimation *blendFromAnimation = nullptr;                 ///< Source clip during a cross-fade.
+        const kAnimationMask *blendMask = nullptr;                        ///< Bones allowed to blend (nullptr = all).
         float blendFromTime     = 0.0f;                                   ///< Source clip time in ticks.
         float blendFromTps      = 0.0f;                                   ///< Source clip ticks-per-second (advances the fade).
         float blendFromDuration = 0.0f;                                   ///< Source clip duration in ticks (loop wrap).

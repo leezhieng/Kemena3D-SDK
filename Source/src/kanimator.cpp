@@ -1,4 +1,5 @@
 #include "kanimator.h"
+#include "kanimationmask.h"
 
 // Root-motion math: translate/scale matrix helpers and quaternion
 // constructors (mat3→quat, mat4←quat) used by handleRootMotion().
@@ -123,6 +124,7 @@ namespace kemena
             // A direct play is an instant switch — drop any active cross-fade.
             blending = false;
             blendFromAnimation = nullptr;
+            blendMask = nullptr;
             currentAnimation = animation;
             currentTime = 0.0f;
             resetRootMotion();
@@ -136,6 +138,7 @@ namespace kemena
         {
             blending = false;
             blendFromAnimation = nullptr;
+            blendMask = nullptr;
             currentAnimation = clip;
             currentTime = 0.0f;
             resetRootMotion();
@@ -164,6 +167,12 @@ namespace kemena
         {
             kBone *fromBone = blendFromAnimation->findBone(nodeName);
             kBone *toBone   = currentAnimation->findBone(nodeName);
+
+            // Partial (masked) cross-fade: bones the mask excludes snap straight
+            // to the destination pose instead of blending, so a transition can
+            // be limited to a body region (e.g. upper body only).
+            const bool maskAllowsBlend = (blendMask == nullptr) ||
+                                         blendMask->isBoneActive(nodeName);
 
             // Root-motion is NEVER blended during a cross-fade. Whether the
             // source or the destination clip carries root motion, its root
@@ -195,7 +204,7 @@ namespace kemena
                 if (rootMotionActive())
                     handleRootMotion(toBone, nodeTransform);
             }
-            else if (fromBone != nullptr && toBone != nullptr)
+            else if (fromBone != nullptr && toBone != nullptr && maskAllowsBlend)
             {
                 fromBone->update(blendFromTime);
                 toBone->update(currentTime);
@@ -291,9 +300,17 @@ namespace kemena
     void kAnimator::beginBlend(kSkeletalAnimation *from, float fromTicks,
                                kSkeletalAnimation *to, float toTicks, float duration)
     {
+        beginBlend(from, fromTicks, to, toTicks, duration, nullptr);
+    }
+
+    void kAnimator::beginBlend(kSkeletalAnimation *from, float fromTicks,
+                               kSkeletalAnimation *to, float toTicks, float duration,
+                               const kAnimationMask *mask)
+    {
         // Drop any previous cross-fade so we always start clean.
         blending = false;
         blendFromAnimation = nullptr;
+        blendMask = mask; // borrowed; nullptr means a full-body fade
 
         if (to == nullptr)
             return;
@@ -346,6 +363,7 @@ namespace kemena
     {
         blending = false;
         blendFromAnimation = nullptr;
+        blendMask = nullptr;
     }
 
     float kAnimator::blendFactor() const
