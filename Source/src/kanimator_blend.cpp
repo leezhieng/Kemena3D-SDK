@@ -54,14 +54,35 @@ namespace kemena
         }
 
         /**
-         * @brief Whether a sample is allowed to drive @p boneName.
+         * @brief Strips Assimp's FBX pivot-wrapper suffix from a node name.
+         *
+         * Assimp's FBX importer inserts helper nodes around every bone
+         * ("<bone>_$AssimpFbx$_Translation" / "_PreRotation" / "_Rotation" /
+         * "_PostRotation" / "_Scaling") and the animation channels target those
+         * wrappers, while bone masks and the mesh's bone palette use the clean
+         * bone name ("mixamorig:Spine"). Matching the raw node name against a
+         * mask would never hit "Spine_$AssimpFbx$_Rotation", so its bones would
+         * fall back to rest even though a mask lists them.
+         */
+        kString baseBoneName(const kString &name)
+        {
+            static const kString marker = "_$AssimpFbx$_";
+            const size_t pos = name.find(marker);
+            return (pos == kString::npos) ? name : name.substr(0, pos);
+        }
+
+        /**
+         * @brief Whether a sample is allowed to drive the bone behind @p nodeName.
          *
          * A null mask (or an empty/identity mask) covers the whole skeleton, so
-         * callers that don't use partial animation see no behaviour change.
+         * callers that don't use partial animation see no behaviour change. The
+         * node name is reduced to its base bone name first so masks (authored
+         * with clean joint names) match the Assimp pivot wrappers that actually
+         * carry the animation.
          */
-        bool maskAllowsBone(const kAnimationMask *mask, const kString &boneName)
+        bool maskAllowsBone(const kAnimationMask *mask, const kString &nodeName)
         {
-            return mask == nullptr || mask->isBoneActive(boneName);
+            return mask == nullptr || mask->isBoneActive(baseBoneName(nodeName));
         }
 
         // Per-(animator, clip) root-motion tracking used by the blend-tree pose
