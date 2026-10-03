@@ -110,7 +110,7 @@ namespace kemena
 		style.Colors[ImGuiCol_NavCursor] = ImVec4(0.26666668f, 0.2901961f, 1.0f, 1.0f); // was ImGuiCol_NavHighlight
 		style.Colors[ImGuiCol_NavWindowingHighlight] = ImVec4(0.49803922f, 0.5137255f, 1.0f, 1.0f);
 		style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.19607843f, 0.1764706f, 0.54509807f, 0.5019608f);
-		style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.19607843f, 0.1764706f, 0.54509807f, 0.5019608f);
+		style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.5019608f);
 	}
 
 	void kGuiManager::init(kRenderer *newRenderer)
