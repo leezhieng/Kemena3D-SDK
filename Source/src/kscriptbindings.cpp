@@ -242,10 +242,28 @@ namespace kemena
     {
         if (!o)
             return nullptr;
-        if (o->getType() != NODE_TYPE_MESH)
-            return nullptr;
-        kMesh *mesh = static_cast<kMesh *>(o);
-        return mesh ? mesh->getAnimator() : nullptr;
+
+        // The animator controller is authored on the object that owns it, which
+        // for a prefab/model instance is usually a container object with the
+        // skinned mesh among its children (Manager::buildRuntimeAnimator() finds
+        // the mesh with findFirstMeshInSubtree() and attaches the animator
+        // there). Only checking the object itself would return null for such an
+        // object, silently turning every SetAnimatorFloat()/PlayAnimation() call
+        // into a no-op — input registers but no animation ever plays. Search the
+        // object and its descendants for the first mesh that carries an animator.
+        if (o->getType() == NODE_TYPE_MESH)
+        {
+            kMesh *mesh = static_cast<kMesh *>(o);
+            if (mesh && mesh->getAnimator())
+                return mesh->getAnimator();
+        }
+
+        for (kObject *child : o->getChildren())
+        {
+            if (kAnimator *animator = scriptGetAnimator(child))
+                return animator;
+        }
+        return nullptr;
     }
 
     static void animatorSetSpeed(kAnimator *a, float speed)   { if (a) a->setSpeed(speed); }
