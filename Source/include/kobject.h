@@ -321,6 +321,41 @@ namespace kemena
          */
         bool compareTag(const kString &otherTag);
 
+        // --- Multiple tags ---------------------------------------------------
+
+        /** @brief Returns every tag assigned to this object. */
+        std::vector<kString> getTags() const;
+
+        /** @brief Replaces the object's tag list (duplicates/empties ignored). */
+        void setTags(const std::vector<kString> &newTags);
+
+        /** @brief Adds a tag to the object if not already present. */
+        void addTag(const kString &newTag);
+
+        /** @brief Removes a tag from the object (no-op if absent). */
+        void removeTag(const kString &tagToRemove);
+
+        /** @brief Returns true if the object carries the given tag. */
+        bool hasTag(const kString &tag) const;
+
+        // --- Layers ----------------------------------------------------------
+
+        /**
+         * @brief Returns the object's layer bitmask.
+         *
+         * Bit 0 is the built-in "Default" layer. An object can belong to any
+         * combination of the project's named layers; systems such as physics,
+         * decal projection and (future) navigation use this mask to filter
+         * which objects they consider.
+         */
+        uint32_t getLayerMask() const;
+
+        /** @brief Sets the object's layer bitmask. */
+        void setLayerMask(uint32_t mask);
+
+        /** @brief Returns true if any bit in @p mask is set on this object. */
+        bool isOnAnyLayer(uint32_t mask) const;
+
         /**
          * @brief Returns the prefab asset UUID this object is an instance of, or empty.
          *
@@ -559,6 +594,16 @@ namespace kemena
         virtual void draw();
 
         /**
+         * @brief Draws the reusable billboard icon quad.
+         *
+         * The caller is responsible for binding a billboard shader and setting
+         * its uniforms before calling this. Exposed so nodes that override
+         * draw() with their own geometry (e.g. decals) can still render an
+         * editor gizmo icon.
+         */
+        void drawIcon();
+
+        /**
          * @brief Serialises the object to a JSON value.
          * @return JSON object containing all serialisable fields.
          */
@@ -637,7 +682,8 @@ namespace kemena
         unsigned int id = 0;
         kString uuid;
         kString name;
-        kString tag;  ///< User-defined tag (like Unity); "" = no tag. Stored on the object.
+        std::vector<kString> tags;  ///< User-defined tags (may be empty).
+        uint32_t layerMask = 1u;    ///< Layer bitmask; bit 0 = built-in "Default".
 
         kString prefabRef;     ///< If non-empty, this is the root of a prefab instance referencing the prefab asset with this UUID.
         kString templateUuid;  ///< For nodes inside a prefab instance, the UUID of the corresponding node in the prefab template.

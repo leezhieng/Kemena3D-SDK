@@ -887,6 +887,16 @@ namespace kemena
             decal->setStatic(obj.value("static", false));
             decal->setShaderType(obj.value("decal_shader", std::string("flat")));
             decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
+            // Projection parameters (added with the projected-decal system).
+            // Older files simply omit them and keep the defaults.
+            if (obj.contains("decal_dir") && obj["decal_dir"].is_array() && obj["decal_dir"].size() == 3)
+                decal->setProjectionDirection(kVec3(obj["decal_dir"][0].get<float>(),
+                                                    obj["decal_dir"][1].get<float>(),
+                                                    obj["decal_dir"][2].get<float>()));
+            decal->setProjectionDistance(obj.value("decal_distance", 2.0f));
+            if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
+                decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
+                                               obj["decal_size"][1].get<float>()));
             if (topLevel) scene->addObject(decal, uuid);
             else { decal->setUuid(uuid.empty() ? generateUuid() : uuid); decal->setParent(parent); }
             result = decal;
@@ -906,7 +916,22 @@ namespace kemena
         result->setPosition(pos);
         result->setRotation(kQuat(glm::radians(rotEu)));
         result->setScale(scl);
-        result->setTag(obj.value("tag", std::string("")));
+        // Tags: prefer the multi-tag array, falling back to the legacy single
+        // "tag" string for files written by older builds.
+        if (obj.contains("tags") && obj["tags"].is_array())
+        {
+            std::vector<kString> loadedTags;
+            for (const auto &t : obj["tags"])
+                if (t.is_string())
+                    loadedTags.push_back(t.get<std::string>());
+            result->setTags(loadedTags);
+        }
+        else
+        {
+            result->setTag(obj.value("tag", std::string("")));
+        }
+        // Layer bitmask (defaults to the "Default" layer).
+        result->setLayerMask(obj.value("layer_mask", 1u));
 
         // Physics descriptor
         if (obj.contains("physics") && obj["physics"].is_object())

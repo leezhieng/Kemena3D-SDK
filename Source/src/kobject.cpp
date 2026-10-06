@@ -300,20 +300,68 @@ namespace kemena
 
     kString kObject::getTag()
     {
-        return tag;
+        // Legacy single-tag accessor: returns the first assigned tag.
+        return tags.empty() ? kString() : tags.front();
     }
 
     void kObject::setTag(kString newTag)
     {
-        tag = newTag;
+        // Legacy single-tag setter: replaces the whole list.
+        tags.clear();
+        if (!newTag.empty())
+            tags.push_back(newTag);
     }
 
     bool kObject::compareTag(const kString &otherTag)
     {
-        // Untagged objects (empty tag) never match anything.
-        if (tag.empty() || otherTag.empty())
+        return hasTag(otherTag);
+    }
+
+    std::vector<kString> kObject::getTags() const
+    {
+        return tags;
+    }
+
+    void kObject::setTags(const std::vector<kString> &newTags)
+    {
+        tags.clear();
+        for (const kString &t : newTags)
+            if (!t.empty() && !hasTag(t))
+                tags.push_back(t);
+    }
+
+    void kObject::addTag(const kString &newTag)
+    {
+        if (newTag.empty() || hasTag(newTag))
+            return;
+        tags.push_back(newTag);
+    }
+
+    void kObject::removeTag(const kString &tagToRemove)
+    {
+        tags.erase(std::remove(tags.begin(), tags.end(), tagToRemove), tags.end());
+    }
+
+    bool kObject::hasTag(const kString &tag) const
+    {
+        if (tag.empty())
             return false;
-        return tag == otherTag;
+        return std::find(tags.begin(), tags.end(), tag) != tags.end();
+    }
+
+    uint32_t kObject::getLayerMask() const
+    {
+        return layerMask;
+    }
+
+    void kObject::setLayerMask(uint32_t mask)
+    {
+        layerMask = mask;
+    }
+
+    bool kObject::isOnAnyLayer(uint32_t mask) const
+    {
+        return (layerMask & mask) != 0u;
     }
 
     kString kObject::getPrefabRef() const
@@ -534,7 +582,11 @@ namespace kemena
     void kObject::draw()
     {
         if (material == nullptr) return;
+        drawIcon();
+    }
 
+    void kObject::drawIcon()
+    {
         kDriver *driver = kDriver::getCurrent();
         if (driver == nullptr) return;
 
@@ -725,6 +777,8 @@ namespace kemena
                 {"uuid", getUuid()},
                 {"name", getName()},
                 {"tag", getTag()},
+                {"tags", tags},
+                {"layer_mask", layerMask},
                 {"active", getActive()},
                 {"static", getStatic()},
                 {"position",

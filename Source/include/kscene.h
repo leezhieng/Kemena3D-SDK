@@ -132,6 +132,15 @@ namespace kemena
         std::vector<kMesh *> getMeshes();
 
         /**
+         * @brief Returns a mutable reference to the internal mesh vector.
+         *
+         * Avoids the copy made by getMeshes(); intended for hot paths such as
+         * decal projection rebuilds that iterate the mesh list every frame.
+         * @return Mutable reference to the mesh list.
+         */
+        std::vector<kMesh *> &getMeshesRef();
+
+        /**
          * @brief Returns all light nodes in the scene.
          * @return Copy of the internal light vector.
          */

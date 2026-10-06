@@ -42,9 +42,9 @@ namespace kemena
 		style.FramePadding = ImVec2(20.0f, 6.0f);
 		style.FrameRounding = 11.9f;
 		style.FrameBorderSize = 0.0f;
-		style.ItemSpacing = ImVec2(5.0f, 13.4f);
+		style.ItemSpacing = ImVec2(5.0f, 6.7f);
 		style.ItemInnerSpacing = ImVec2(5.0f, 1.8f);
-		style.CellPadding = ImVec2(12.1f, 9.2f);
+		style.CellPadding = ImVec2(12.1f, 4.6f);
 		style.IndentSpacing = 20.0f;
 		style.ColumnsMinSpacing = 8.7f;
 		style.ScrollbarSize = 11.6f;

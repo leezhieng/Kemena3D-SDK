@@ -68,9 +68,14 @@ namespace kemena
 	}
 	
 	std::vector<kMesh *> kScene::getMeshes()
-    {
-        return meshes;
-    }
+	   {
+	       return meshes;
+	   }
+
+	   std::vector<kMesh *> &kScene::getMeshesRef()
+	   {
+	       return meshes;
+	   }
 
     std::vector<kLight *> kScene::getLights()
     {

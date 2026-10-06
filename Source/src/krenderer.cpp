@@ -1161,10 +1161,15 @@ void main()
         {
             kDecal *decal = (kDecal *)currentNode;
 
-            // Decals are drawn like thin flat meshes through their assigned
-            // material. An "Unlit" material with alpha blending is the intended
-            // setup so the sticker ignores scene lighting; lit materials also
-            // work but shade the quad like a normal surface.
+            // Rebuild the projected polygon mesh against the scene. This is a
+            // cheap no-op unless the projection parameters, the decal transform
+            // or the scene mesh count changed since the last rebuild.
+            decal->updateProjectedGeometry(scene);
+
+            // Decals are drawn like meshes through their assigned material. An
+            // "Unlit" material with alpha blending is the intended setup so the
+            // sticker ignores scene lighting; lit materials also work but shade
+            // the generated surface like a normal one.
             if (decal->getMaterial() != nullptr && world->getMainCamera() != nullptr)
             {
                 kMaterial *mat = decal->getMaterial();
@@ -1187,11 +1192,14 @@ void main()
                     kShader *shader = mat->getShader();
                     shader->use();
 
-                    shader->setValue("modelMatrix", decal->getModelMatrixWorld());
+                    // The generated decal geometry is already in world space, so
+                    // the model and normal matrices are identity.
+                    shader->setValue("modelMatrix", kMat4(1.0f));
                     shader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
                     shader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
-                    // Lit (PBR/Phong) materials transform normals via normalMatrix.
-                    shader->setValue("normalMatrix", glm::transpose(glm::inverse(decal->getModelMatrixWorld())));
+                    shader->setValue("normalMatrix", kMat3(1.0f));
+                    // Camera position for lit (PBR/Phong) decal materials.
+                    shader->setValue("viewPos", world->getMainCamera()->getGlobalPosition());
 
                     shader->setValue("material.tiling", mat->getUvTiling());
                     shader->setValue("material.ambient", mat->getAmbientColor());
@@ -1382,6 +1390,53 @@ void main()
                     if (decalSkyboxBound)
                         driver->unbindTextureCube(9);
                     shader->unuse();
+                }
+            }
+
+            // Editor gizmo icon: a billboard at the pivot drawn with a
+            // dedicated icon material (the projection material carries the
+            // decal artwork, so it cannot double as the icon).
+            if (kMaterial *iconMat = decal->getIconMaterial())
+            {
+                if (world->getMainCamera() != nullptr && iconMat->getShader() != nullptr)
+                {
+                    if (iconMat->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+                    {
+                        driver->setBlend(true);
+                        driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+                    }
+                    else
+                    {
+                        driver->setBlend(false);
+                    }
+                    driver->setCullFace(false);
+
+                    kMat4 iconView = world->getMainCamera()->getViewMatrix();
+                    kMat4 iconProj = world->getMainCamera()->getProjectionMatrix();
+                    kShader *iconShader = iconMat->getShader();
+                    iconShader->use();
+
+                    iconShader->setValue("viewProjection", iconProj * iconView);
+                    iconShader->setValue("cameraRightWorldSpace", kVec3(iconView[0][0], iconView[1][0], iconView[2][0]));
+                    iconShader->setValue("cameraUpWorldSpace", kVec3(iconView[0][1], iconView[1][1], iconView[2][1]));
+                    iconShader->setValue("billboardPosition", decal->getGlobalPosition());
+                    iconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    iconShader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
+
+                    for (size_t l = 0; l < iconMat->getTextures().size(); ++l)
+                    {
+                        kTexture *tex = iconMat->getTexture(l);
+                        if (tex != nullptr && tex->getType() == kTextureType::TEX_TYPE_2D)
+                        {
+                            driver->bindTexture2D((int)l, tex->getTextureID());
+                            driver->setUniformInt(iconShader->getShaderProgram(), "albedoMap", (int)l);
+                        }
+                    }
+
+                    decal->drawIcon();
+
+                    driver->unbindTexture2D(0);
+                    iconShader->unuse();
                 }
             }
         }
@@ -2194,11 +2249,12 @@ void main()
         }
         else if (currentNode->getType() == kNodeType::NODE_TYPE_DECAL)
         {
-            // Decals are pickable through their flat quad geometry, exactly
-            // like a mesh: the picking shader colors the quad by object ID.
+            // Decals are pickable through their generated world-space geometry,
+            // exactly like a mesh: the picking shader colors it by object ID.
             kDecal *decal = (kDecal *)currentNode;
+            decal->updateProjectedGeometry(scene);
             kVec3 idColor = idToRgb(decal->getId());
-            pickingShader->setValue("modelMatrix", decal->getModelMatrixWorld());
+            pickingShader->setValue("modelMatrix", kMat4(1.0f));
             pickingShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                        idColor.g / 255.0f,
                                                        idColor.b / 255.0f));
@@ -2207,6 +2263,30 @@ void main()
             pickingShader->setValue("finalBonesMatrices", boneTransforms);
 
             decal->draw();
+
+            // Billboard fallback so a decal with no projected geometry is still
+            // clickable in the viewport.
+            if (pickingIconShader && pickingIconVAO && world->getMainCamera() != nullptr)
+            {
+                pickingShader->unuse();
+                pickingIconShader->use();
+
+                kMat4 view = world->getMainCamera()->getViewMatrix();
+                kMat4 proj = world->getMainCamera()->getProjectionMatrix();
+                pickingIconShader->setValue("viewProjection", proj * view);
+                pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+                pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+                pickingIconShader->setValue("billboardPosition", decal->getGlobalPosition());
+                pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
+                                                               idColor.g / 255.0f,
+                                                               idColor.b / 255.0f));
+
+                driver->drawArrays(pickingIconVAO, kPrimitiveType::TRIANGLE_STRIP, 4);
+
+                pickingIconShader->unuse();
+                pickingShader->use();
+            }
         }
         else if (pickingIconShader && pickingIconVAO &&
                  (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT ||

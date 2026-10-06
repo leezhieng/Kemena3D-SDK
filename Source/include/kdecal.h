@@ -1,22 +1,34 @@
 /**
  * @file kdecal.h
- * @brief Flat sticker-quad scene node (decal).
+ * @brief Projected scene node (decal) that wraps its material/texture onto
+ *        the surfaces it intersects.
  *
- * A decal is a thin, flat, textured quad that is placed slightly off a surface
- * (a wall, the floor, etc.) and rendered transform-oriented with its material,
- * so it behaves like a sticker.  Position/rotation/scale on the kObject
- * transform position the quad, orient it against the surface and size it.
+ * Unlike the original implementation — a pre-made flat quad floating above a
+ * surface — a decal is now a *projection volume*.  The node's transform defines
+ * the projection: the pivot is the projector origin, the local projection
+ * direction (default: straight down, -Y) is the axis, the projection distance
+ * is how far the volume extends, and the projection size is the width/height of
+ * the rectangular cross-section.
  *
- * Two decal-specific properties are stored on the node:
- *  - surface offset: how far the quad floats above its pivot (along its local
- *    +Y / face normal) so it does not z-fight with the surface underneath;
- *  - shader type ("flat", "pbr" or "phong"): the built-in material that is
- *    applied to a freshly created decal. A separately assigned .mat asset (via
- *    the material UUID inherited from kObject) overrides this at render time.
+ * During rendering `updateProjectedGeometry()` walks the scene meshes, clips
+ * every triangle that intersects the projection box, and rebuilds a small mesh
+ * from the clipped polygons.  Texture coordinates are generated automatically
+ * from the fragment's position within the box, so whatever material (and its
+ * albedo/alpha texture) is assigned to the decal is mapped onto the surface.
  *
- * Rendering uses the same material pipeline as kMesh: assign a material whose
- * albedo map carries the decal artwork. "Flat" is unlit; "PBR" and "Phong" are
- * lit by the scene lights.
+ * Because the generated geometry is stored in world space the renderer draws
+ * it with an identity model matrix; the projection parameters are the only
+ * thing that changes when the node is moved or edited.
+ *
+ * Properties:
+ *  - projection direction: unit-less local-space vector (normalised on use).
+ *  - projection distance: how far along the direction the volume extends.
+ *  - projection size: width (local X) and height (local Y) of the cross-section.
+ *  - surface offset: pulls the generated fragments back toward the projector so
+ *    they do not z-fight with the surface underneath.
+ *  - shader type ("flat", "pbr" or "phong"): built-in material applied to a
+ *    freshly created decal. A separately assigned .mat asset (material UUID
+ *    inherited from kObject) overrides this at render time.
  */
 #ifndef KDECAL_H
 #define KDECAL_H
@@ -24,17 +36,24 @@
 #include "kexport.h"
 #include "kdriver.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
 #include "kobject.h"
 
 namespace kemena
 {
+    class kScene;
+
     /**
-     * @brief Scene-graph node that draws a flat 1x1 unit quad (XZ plane,
-     *        normal +Y) stamped with its material.
+     * @brief Scene-graph node that projects its material onto the geometry it
+     *        covers.
      *
-     * The quad geometry is created lazily on the first draw() call and
-     * released in the destructor.  The transform, material UUID, shader type
-     * and surface offset are serialised; the geometry is always rebuilt.
+     * The projected polygon mesh is rebuilt lazily (see
+     * updateProjectedGeometry()) whenever the projection parameters, the node's
+     * world transform, or the scene mesh count changes.  Only decal-specific
+     * properties are serialised — the geometry itself is always regenerated.
      */
     class KEMENA3D_API kDecal : public kObject
     {
@@ -45,15 +64,66 @@ namespace kemena
          */
         kDecal(kObject *parentNode = nullptr);
 
-        /** @brief Destroys the decal and releases its GPU quad buffers. */
+        /** @brief Destroys the decal and releases its GPU buffers. */
         ~kDecal();
 
         /**
-         * @brief Draws the flat quad.
+         * @brief Rebuilds the projected polygon geometry if needed.
          *
-         * Assumes the caller (kRenderer) has already bound a shader and set the
-         * transform/material uniforms for this object, mirroring how kMesh nodes
-         * are drawn.
+         * For a dynamic (non-static) decal this compares the current world
+         * transform and a hash of every scene mesh's transform against the
+         * values from the last rebuild, so it also reacts when the surface it
+         * projects onto is moved.  For a static decal the geometry is baked
+         * once and then frozen until markGeometryDirty() is called explicitly.
+         * In both cases an up-to-date decal is a cheap no-op, so this is safe
+         * to call every frame from the renderer before draw().
+         *
+         * @param scene Scene whose meshes are projected against.
+         */
+        void updateProjectedGeometry(kScene *scene);
+
+        /** @brief Forces the next updateProjectedGeometry() call to rebuild. */
+        void markGeometryDirty();
+
+        /** @brief Returns true when no surface was hit (nothing to draw). */
+        bool isGeometryEmpty() const;
+
+        /**
+         * @brief Appends the 12 wireframe edges of the projection volume to
+         *        @p out as line-list vertex pairs (world space).
+         *
+         * Used by the editor to visualize the projection direction, distance
+         * and size. The node's world transform must be up to date.
+         * @param out Receives N/N+1 line-segment endpoint pairs (6 floats each).
+         */
+        void appendProjectionDebugLines(std::vector<kVec3> &out);
+
+        /**
+         * @brief Returns the editor billboard icon material, or nullptr.
+         *
+         * This is a separate slot from the projection material (which carries
+         * the decal artwork): the icon material is used purely for the scene
+         * gizmo billboard so the decal stays visible/selectable in the editor.
+         */
+        kMaterial *getIconMaterial() const;
+
+        /**
+         * @brief Sets the editor billboard icon material.
+         *
+         * Not serialised — the editor rebuilds it on load, mirroring how the
+         * light/camera/audio gizmo materials are handled.
+         */
+        void setIconMaterial(kMaterial *material);
+
+        /** @brief Returns the number of triangles in the generated decal mesh. */
+        int getTriangleCount() const;
+
+        /**
+         * @brief Draws the generated projected mesh.
+         *
+         * Assumes the caller (kRenderer) has already bound a shader with an
+         * identity model matrix and set the material uniforms, mirroring how
+         * kMesh nodes are drawn.
          */
         void draw() override;
 
@@ -74,15 +144,66 @@ namespace kemena
         void setShaderType(const kString &type);
 
         /**
-         * @brief Returns how far the quad floats above its pivot, along its
-         *        local +Y (face normal).
-         * @return Surface offset in local units.
+         * @brief Returns the local-space projection direction.
+         * @return Direction vector (not necessarily normalised).
+         */
+        kVec3 getProjectionDirection() const;
+
+        /**
+         * @brief Sets the local-space projection direction.
+         * @param direction Direction vector (default (0, -1, 0) = straight down).
+         */
+        void setProjectionDirection(const kVec3 &direction);
+
+        /**
+         * @brief Returns how far the projection extends along the direction.
+         * @return Projection distance in local units.
+         */
+        float getProjectionDistance() const;
+
+        /**
+         * @brief Sets how far the projection extends along the direction.
+         * @param distance Projection distance in local units (clamped to >= 0).
+         */
+        void setProjectionDistance(float distance);
+
+        /**
+         * @brief Returns the width/height of the projection cross-section.
+         * @return Cross-section size in local units (x = width, y = height).
+         */
+        kVec2 getProjectionSize() const;
+
+        /**
+         * @brief Sets the width/height of the projection cross-section.
+         * @param size Cross-section size in local units (x = width, y = height).
+         */
+        void setProjectionSize(const kVec2 &size);
+
+        /**
+         * @brief Returns the layer mask this decal projects onto.
+         *
+         * Only scene meshes whose layer mask intersects this value are
+         * considered during projection. The default (all bits set) projects
+         * onto every layer.
+         */
+        uint32_t getProjectionLayerMask() const;
+
+        /**
+         * @brief Sets the layer mask this decal projects onto.
+         * @param mask Bitmask of layers (bit 0 = "Default").
+         */
+        void setProjectionLayerMask(uint32_t mask);
+
+        /**
+         * @brief Returns how far generated fragments are pulled back toward the
+         *        projector to avoid z-fighting.
+         * @return Surface offset in world units.
          */
         float getSurfaceOffset() const;
 
         /**
-         * @brief Sets how far the quad floats above its pivot.
-         * @param offset New surface offset (0 to lie on the pivot plane).
+         * @brief Sets how far generated fragments are pulled back.
+         * @param offset Surface offset in world units (0 = lie exactly on the surface).
          */
         void setSurfaceOffset(float offset);
 
@@ -91,26 +212,57 @@ namespace kemena
          *
          * Delegates to kObject::serialize() (transform, children, material UUID,
          * components), stamps the node type as "decal", and stores the shader
-         * type and surface offset.
+         * type and projection parameters. The generated geometry is not stored.
          * @return JSON object describing the decal.
          */
         json serialize() override;
 
     private:
-        /// Allocates the unit-quad VAO/VBO/index buffers (idempotent).
-        void buildQuad();
-        /// (Re)uploads the position buffer when the surface offset changed.
-        void refreshGeometry();
+        /**
+         * @brief Computes the world-space projection frame from the node's
+         *        transform and projection parameters.
+         * @return false if the transform is degenerate (zero scale).
+         */
+        bool computeProjectionFrame(kVec3 &origin, kVec3 &axisXW, kVec3 &axisYW,
+                                    kVec3 &dirWorld, float &halfW, float &halfH,
+                                    float &worldWidth, float &worldHeight,
+                                    float &worldDistance);
 
-        uint32_t quadVAO  = 0; ///< Vertex array for the flat quad.
-        uint32_t quadVBO  = 0; ///< Vertex position buffer.
-        uint32_t quadUVBO = 0; ///< Vertex UV buffer.
-        uint32_t quadNBO  = 0; ///< Vertex normal buffer (for lit materials).
-        uint32_t quadEBO  = 0; ///< Index buffer.
+        /// Rebuilds the CPU geometry buffers by clipping scene triangles.
+        void rebuildGeometry(kScene *scene);
+        /// (Re)uploads the CPU geometry buffers to the GPU (idempotent).
+        void uploadGeometry();
+        /// Releases the GPU geometry buffers.
+        void releaseGeometry();
 
-        float    builtOffset    = 0.0f;  ///< Surface offset the buffers were built with.
-        float    surfaceOffset  = 0.01f; ///< Quad elevation above the pivot (avoids z-fighting).
-        kString  decalShaderType = "flat"; ///< Built-in shader choice ("flat"/"pbr"/"phong").
+        // --- GPU geometry -----------------------------------------------------
+        uint32_t vao = 0; ///< Vertex array for the generated decal mesh.
+        uint32_t vbo = 0; ///< Vertex position buffer (world space).
+        uint32_t uvbo = 0; ///< Vertex UV buffer.
+        uint32_t nbo = 0;  ///< Vertex normal buffer (world space).
+        uint32_t ebo = 0;  ///< Index buffer.
+        size_t indexCount = 0; ///< Number of indices in the generated mesh.
+
+        // --- CPU geometry (world space) --------------------------------------
+        std::vector<kVec3> positions;
+        std::vector<kVec3> normals;
+        std::vector<kVec2> uvs;
+        std::vector<uint32_t> indices;
+
+        // --- Projection parameters -------------------------------------------
+        kVec3 projDirection = kVec3(0.0f, -1.0f, 0.0f); ///< Local projection axis.
+        float projDistance  = 2.0f;                    ///< Extent along the axis.
+        kVec2 projSize      = kVec2(1.0f, 1.0f);       ///< Cross-section width/height.
+        uint32_t projLayerMask = 0xFFFFFFFFu;          ///< Layers this decal projects onto (all by default).
+        float surfaceOffset = 0.01f;                   ///< Pull-back toward the projector.
+        kString decalShaderType = "flat";              ///< Built-in shader choice.
+        kMaterial *iconMaterial = nullptr;             ///< Editor gizmo billboard material (not owned/serialised).
+
+        // --- Rebuild tracking -------------------------------------------------
+        bool     geometryDirty      = true; ///< Force a rebuild on next update.
+        kMat4    lastWorldMatrix    = kMat4(1.0f); ///< World transform at last rebuild.
+        uint64_t lastSceneSignature = 0;    ///< Hash of scene mesh transforms at last rebuild.
+        bool     hasLastSignature   = false; ///< False until the first rebuild completed.
     };
 }
 
