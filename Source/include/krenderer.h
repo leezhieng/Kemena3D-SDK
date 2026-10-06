@@ -431,6 +431,22 @@ namespace kemena
         kRenderMode getRenderMode();
 
         /**
+         * @brief Enables or disables the editor-only object gizmo billboards.
+         *
+         * Cameras, lights, audio sources and decals draw a billboard icon so
+         * they stay visible/selectable in the editor viewport. Those icons are
+         * editor scaffolding, so they are OFF by default: the runtime and the
+         * in-editor Game panel therefore never show them. The editor viewports
+         * (World and Prefab panels) turn them on explicitly.
+         *
+         * @param enable true to draw gizmo icon billboards during render().
+         */
+        void setEditorGizmosEnabled(bool enable) { editorGizmosEnabled = enable; }
+
+        /** @brief Returns whether editor gizmo icon billboards are drawn. */
+        bool getEditorGizmosEnabled() const { return editorGizmosEnabled; }
+
+        /**
          * @brief Renders a color-ID-based outline around selected objects.
          *
          * Requires renderPickingPass() to have been called this frame.
@@ -626,6 +642,11 @@ namespace kemena
         uint32_t  debugLineVbo    = 0;       ///< Vertex buffer for debug line geometry.
 
         kRenderMode renderMode = kRenderMode::RENDER_MODE_FULL; ///< Active debug visualization mode.
+
+        /// Editor-only gizmo icon billboards (camera/light/audio/decal). Off by
+        /// default so the runtime and in-editor Game view never draw them; the
+        /// editor viewports enable it via setEditorGizmosEnabled().
+        bool editorGizmosEnabled = false;
 
         /**
          * @brief Renders the scene graph using a single override shader (no lights/shadows).

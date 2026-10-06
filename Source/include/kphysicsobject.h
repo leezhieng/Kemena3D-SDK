@@ -123,6 +123,13 @@ namespace kemena
         kPhysicsObjectType type          = kPhysicsObjectType::Dynamic;
         kVec3              position      = kVec3(0.0f, 0.0f, 0.0f);
         kQuat              rotation      = kQuat(1.0f, 0.0f, 0.0f, 0.0f); ///< Identity quaternion.
+        /// Collider offset from the object's pivot, expressed in the object's
+        /// local space. The collider shape is translated by this amount (rotated
+        /// by the object's rotation) relative to the body origin.
+        kVec3              offsetPosition = kVec3(0.0f, 0.0f, 0.0f);
+        /// Collider rotation offset from the object's pivot. Applied on top of
+        /// the object's rotation so the collider can be oriented independently.
+        kQuat              offsetRotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
         float              mass          = 1.0f;   ///< kg; ignored for Static / Kinematic.
         float              friction      = 0.5f;   ///< 0 = frictionless, 1 = high friction.
         float              restitution   = 0.0f;   ///< 0 = inelastic, 1 = perfectly elastic.
@@ -176,6 +183,18 @@ namespace kemena
 
         /** @brief Returns the body's current world-space orientation. */
         kQuat getRotation() const;
+
+        /**
+         * @brief Returns the collider's local offset from the object's pivot.
+         *
+         * The body transform is the owning object's transform composed with
+         * this offset; kObject::syncFromPhysics() inverts it when copying the
+         * simulated body transform back onto the object.
+         */
+        kVec3 getOffsetPosition() const;
+
+        /** @brief Returns the collider's local rotation offset. */
+        kQuat getOffsetRotation() const;
 
         // --- Velocity --------------------------------------------------------
 

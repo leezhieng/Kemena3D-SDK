@@ -98,6 +98,28 @@ namespace kemena
     {
         return g_boundManager ? g_boundManager->getActiveObject() : nullptr;
     }
+
+    // Destroys a GameObject at runtime: releases its physics body (if any),
+    // hides it, and flags it so the script/scene-graph walks skip it (its
+    // scripts stop dispatching). The node stays parented so the editor can
+    // restore it when Play stops.
+    static void scriptDestroyObject(kObject *o)
+    {
+        if (o == nullptr)
+            return;
+
+        if (kPhysicsObject *body = o->getPhysicsObject())
+        {
+            if (g_boundManager != nullptr)
+                if (kPhysicsManager *pm = g_boundManager->getPhysicsManager())
+                    pm->destroyObject(body);
+            o->detachPhysics();
+        }
+
+        o->setActive(false);
+        o->setDestroyed(true);
+    }
+
     static float scriptDeltaTime()
     {
         return g_boundManager ? g_boundManager->getDeltaTime() : 0.0f;
@@ -657,6 +679,8 @@ namespace kemena
         // --- Global functions ------------------------------------------------
         r = e->RegisterGlobalFunction("kObject@ getSelf()",
                                       asFUNCTION(scriptGetSelf), asCALL_CDECL); assert(r >= 0);
+        r = e->RegisterGlobalFunction("void destroyObject(kObject@)",
+                                      asFUNCTION(scriptDestroyObject), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("float getDeltaTime()",
                                       asFUNCTION(scriptDeltaTime), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("float getFixedDeltaTime()",

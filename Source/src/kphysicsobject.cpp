@@ -33,6 +33,9 @@ namespace kemena
         kPhysicsObjectType  type      = kPhysicsObjectType::Dynamic;
         kPhysicsShapeType   shapeType = kPhysicsShapeType::Box;
         bool                initialized = false;
+        // Collider offset from the owning object's pivot (see kPhysicsObjectDesc).
+        kVec3               offsetPosition = kVec3(0.0f, 0.0f, 0.0f);
+        kQuat               offsetRotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
     };
 
     kPhysicsObject::kPhysicsObject()
@@ -262,10 +265,12 @@ namespace kemena
             return false;
         }
 
-        m_impl->physicsSystem = ps;
-        m_impl->type          = bodyType;
-        m_impl->shapeType     = desc.shape.type;
-        m_impl->initialized   = true;
+        m_impl->physicsSystem  = ps;
+        m_impl->type           = bodyType;
+        m_impl->shapeType      = desc.shape.type;
+        m_impl->offsetPosition = desc.offsetPosition;
+        m_impl->offsetRotation = desc.offsetRotation;
+        m_impl->initialized    = true;
         return true;
     }
 
@@ -320,6 +325,16 @@ namespace kemena
         if (!m_impl->initialized) return kQuat(1.0f, 0.0f, 0.0f, 0.0f);
         JPH::Quat q = m_impl->physicsSystem->GetBodyInterface().GetRotation(m_impl->bodyId);
         return kQuat(q.GetW(), q.GetX(), q.GetY(), q.GetZ());
+    }
+
+    kVec3 kPhysicsObject::getOffsetPosition() const
+    {
+        return m_impl->offsetPosition;
+    }
+
+    kQuat kPhysicsObject::getOffsetRotation() const
+    {
+        return m_impl->offsetRotation;
     }
 
     // --- Velocity --------------------------------------------------------

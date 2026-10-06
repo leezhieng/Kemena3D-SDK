@@ -1395,8 +1395,10 @@ void main()
 
             // Editor gizmo icon: a billboard at the pivot drawn with a
             // dedicated icon material (the projection material carries the
-            // decal artwork, so it cannot double as the icon).
-            if (kMaterial *iconMat = decal->getIconMaterial())
+            // decal artwork, so it cannot double as the icon). Editor-only —
+            // skipped in the Game view and at runtime.
+            if (kMaterial *iconMat = decal->getIconMaterial();
+                iconMat != nullptr && editorGizmosEnabled)
             {
                 if (world->getMainCamera() != nullptr && iconMat->getShader() != nullptr)
                 {
@@ -1420,7 +1422,7 @@ void main()
                     iconShader->setValue("cameraRightWorldSpace", kVec3(iconView[0][0], iconView[1][0], iconView[2][0]));
                     iconShader->setValue("cameraUpWorldSpace", kVec3(iconView[0][1], iconView[1][1], iconView[2][1]));
                     iconShader->setValue("billboardPosition", decal->getGlobalPosition());
-                    iconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    iconShader->setValue("billboardSize", kVec2(0.56f, 0.56f));
                     iconShader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < iconMat->getTextures().size(); ++l)
@@ -1440,7 +1442,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_LIGHT)
         {
             kLight *currentLight = (kLight *)currentNode;
 
@@ -1468,7 +1470,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", currentLight->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(0.56f, 0.56f));
                     shader->setValue("color", currentLight->getDiffuseColor());
 
                     for (size_t l = 0; l < currentLight->getMaterial()->getTextures().size(); l++)
@@ -1488,7 +1490,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_CAMERA)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_CAMERA)
         {
             kCamera *currentCamera = (kCamera *)currentNode;
 
@@ -1522,7 +1524,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", currentCamera->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(0.56f, 0.56f));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < currentCamera->getMaterial()->getTextures().size(); l++)
@@ -1542,7 +1544,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
         {
             kObject *audioObj = currentNode;
 
@@ -1570,7 +1572,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", audioObj->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(0.56f, 0.56f));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < audioObj->getMaterial()->getTextures().size(); l++)
@@ -2277,7 +2279,7 @@ void main()
                 pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                 pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                 pickingIconShader->setValue("billboardPosition", decal->getGlobalPosition());
-                pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                pickingIconShader->setValue("billboardSize", kVec2(0.56f, 0.56f));
                 pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                                idColor.g / 255.0f,
                                                                idColor.b / 255.0f));
@@ -2308,7 +2310,7 @@ void main()
             pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
             pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
             pickingIconShader->setValue("billboardPosition", currentNode->getGlobalPosition());
-            pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+            pickingIconShader->setValue("billboardSize", kVec2(0.56f, 0.56f));
             pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                            idColor.g / 255.0f,
                                                            idColor.b / 255.0f));
@@ -3007,8 +3009,12 @@ void main() { outColor = vec4(lineColor, 1.0); }
             {
                 node->calculateModelMatrix();
                 const kPhysicsObjectDesc &pd = node->getPhysicsDesc();
-                kVec3 pos = node->getGlobalPosition();
-                kQuat rot = node->getGlobalRotation();
+                // Fold the collider offset into the frame so the wireframe
+                // matches where Jolt places the shape (the offset is baked into
+                // the body-local shape, not applied by the body transform).
+                kQuat nodeRot = node->getGlobalRotation();
+                kVec3 pos = node->getGlobalPosition() + nodeRot * pd.offsetPosition;
+                kQuat rot = nodeRot * pd.offsetRotation;
                 std::vector<float> verts;
 
                 // Local-axis vectors rotated into world space — colliders are
@@ -3112,7 +3118,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
                         kVec3 ext = box.max - box.min;
                         if (ext.x > 1e-4f || ext.y > 1e-4f || ext.z > 1e-4f)
                         {
-                            kVec3 c = (box.min + box.max) * 0.5f;
+                            kVec3 c = (box.min + box.max) * 0.5f + nodeRot * pd.offsetPosition;
                             kVec3 e = ext * 0.5f;
                             e.x *= pd.shape.customScale.x;
                             e.y *= pd.shape.customScale.y;

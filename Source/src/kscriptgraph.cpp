@@ -108,6 +108,7 @@ namespace kemena
             case kScriptNodeType::GetAnimatorFloat:   return "Get Float";
             case kScriptNodeType::GetAnimatorInt:     return "Get Integer";
             case kScriptNodeType::Lerp:               return "Lerp";
+            case kScriptNodeType::DestroyObject:      return "Destroy GameObject";
             default:                                return "Node";
         }
     }
@@ -312,6 +313,12 @@ namespace kemena
                 in("", kScriptPinType::Exec);
                 in("Target", kScriptPinType::Object);
                 in("Active", kScriptPinType::Bool);
+                out("", kScriptPinType::Exec);
+                break;
+
+            case kScriptNodeType::DestroyObject:
+                in("", kScriptPinType::Exec);
+                in("Target", kScriptPinType::Object);
                 out("", kScriptPinType::Exec);
                 break;
 
@@ -1340,6 +1347,8 @@ namespace kemena
                     case kScriptNodeType::SetActive:
                         return emitNamedInput(n, "Target") + ".setActive(" +
                                emitNamedInput(n, "Active") + ");";
+                    case kScriptNodeType::DestroyObject:
+                        return "destroyObject(" + emitNamedInput(n, "Target") + ");";
                     case kScriptNodeType::SetVariable:
                     {
                         if (n.valueStr.empty())
