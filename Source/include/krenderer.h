@@ -284,18 +284,6 @@ namespace kemena
         float getIconGizmoSize() const { return iconGizmoSize; }
 
         /**
-         * @brief Enables/disables the editor-only billboard gizmo icons
-         *        (light, camera, decal, audio).
-         *
-         * These icons are authoring aids and must not appear in the Game panel
-         * (or any play/preview view). The editor viewport leaves this enabled;
-         * the Game panel disables it for its render pass.
-         */
-        void setEditorGizmosEnabled(bool enabled) { editorGizmosEnabled = enabled; }
-        /** @brief Returns whether editor billboard gizmo icons are drawn. */
-        bool getEditorGizmosEnabled() const { return editorGizmosEnabled; }
-
-        /**
          * @brief Enables or disables automatic exposure adjustment.
          *
          * When enabled, the average luminance of the resolved FBO colour texture
@@ -637,7 +625,6 @@ namespace kemena
         float    shadowNormalOffset = 1.5f;   ///< Normal-offset distance in shadow-map texels.
         float    shadowSoftness     = 1.5f;   ///< PCF tap spacing in shadow-map texels.
         float    iconGizmoSize      = 0.48f;  ///< Editor node gizmo icon billboard size (world units).
-        bool     editorGizmosEnabled = true;  ///< Draw editor-only billboard gizmo icons (light/camera/decal/audio); false for game/preview passes.
         uint32_t shadowFbo          = 0;      ///< Single FBO; layer re-attached per cascade.
         uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
         kMat4    lightSpaceMatrices[kMaxShadowCascades]; ///< Per-cascade light projection*view matrices.
