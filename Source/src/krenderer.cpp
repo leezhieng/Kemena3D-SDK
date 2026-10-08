@@ -302,6 +302,14 @@ layout(location = 2) in vec2 vertexTexCoord;
 layout(location = 3) in vec3 vertexNormal;
 layout(location = 6) in ivec4 boneIDs;
 layout(location = 7) in vec4  weights;
+layout(location = 8)  in vec3 morphPosition0;
+layout(location = 9)  in vec3 morphPosition1;
+layout(location = 10) in vec3 morphPosition2;
+layout(location = 11) in vec3 morphPosition3;
+layout(location = 12) in vec3 morphNormal0;
+layout(location = 13) in vec3 morphNormal1;
+layout(location = 14) in vec3 morphNormal2;
+layout(location = 15) in vec3 morphNormal3;
 
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
@@ -309,13 +317,26 @@ uniform mat4 projectionMatrix;
 
 const int MAX_BONES         = 128;
 const int MAX_BONE_INFLUENCE = 4;
+const int MAX_MORPH_TARGETS  = 4;
 uniform mat4 finalBonesMatrices[MAX_BONES];
+uniform float morphWeights[MAX_MORPH_TARGETS];
 
 out vec2 vTexCoord;
 out vec3 vNormal;
 
 void main()
 {
+    vec3 morphedPosition = vertexPosition;
+    vec3 morphedNormal   = vertexNormal;
+    morphedPosition += morphWeights[0] * morphPosition0;
+    morphedNormal   += morphWeights[0] * morphNormal0;
+    morphedPosition += morphWeights[1] * morphPosition1;
+    morphedNormal   += morphWeights[1] * morphNormal1;
+    morphedPosition += morphWeights[2] * morphPosition2;
+    morphedNormal   += morphWeights[2] * morphNormal2;
+    morphedPosition += morphWeights[3] * morphPosition3;
+    morphedNormal   += morphWeights[3] * morphNormal3;
+
     vec4  pos = vec4(0.0);
     vec3  n   = vec3(0.0);
     float tw  = 0.0;
@@ -326,11 +347,11 @@ void main()
         float w = weights[i];
         if (id < 0 || w <= 0.0) continue;
         if (id >= MAX_BONES) { pos = vec4(0.0); n = vec3(0.0); break; }
-        pos += finalBonesMatrices[id] * vec4(vertexPosition, 1.0) * w;
-        n   += mat3(transpose(inverse(finalBonesMatrices[id]))) * vertexNormal * w;
+        pos += finalBonesMatrices[id] * vec4(morphedPosition, 1.0) * w;
+        n   += mat3(transpose(inverse(finalBonesMatrices[id]))) * morphedNormal * w;
         tw  += w;
     }
-    if (tw == 0.0) { pos = vec4(vertexPosition, 1.0); n = vertexNormal; }
+    if (tw == 0.0) { pos = vec4(morphedPosition, 1.0); n = morphedNormal; }
 
     vTexCoord = vertexTexCoord;
     vNormal   = normalize(mat3(transpose(inverse(modelMatrix))) * n);
@@ -928,6 +949,17 @@ void main()
                     }
                     shader->setValue("finalBonesMatrices", boneTransforms);
 
+                    // Blend-shape weights, padded to the shader's fixed array so
+                    // a mesh with fewer targets leaves the unused slots at rest.
+                    {
+                        std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+                        const std::vector<float> &mw = currentMesh->getMorphWeights();
+                        for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                            morphWeights[m] = mw[m];
+                        if (!mw.empty())
+                            shader->setValue("morphWeights", morphWeights);
+                    }
+
                     // Lights
                     int countSun = 0, countPoint = 0, countSpot = 0;
                     for (size_t j = 0; j < scene->getLights().size(); ++j)
@@ -1282,12 +1314,28 @@ void main()
                         }
                     }
 
-                    // Decals never cast/receive shadows. Feeding enableShadow and
-                    // receiveShadow=false makes the lit shaders short-circuit
-                    // calcShadow() (returns 0.0) without sampling the shadow map.
+                    // Lit (PBR/Phong) decal materials receive scene shadows the
+                    // same way meshes do. Flat/unlit materials simply ignore
+                    // these uniforms. The decal geometry is already world-space
+                    // (normal matrix = identity), so it samples the cascaded
+                    // shadow map exactly like the mesh path above.
+                    const int decalShadowUnit = 8;
+                    int decalCascCount = std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades));
+                    driver->bindTexture2DArray(decalShadowUnit, shadowTexArray);
+                    shader->setValue("shadowMapArray", decalShadowUnit);
+                    std::vector<kMat4> decalLsm(lightSpaceMatrices, lightSpaceMatrices + decalCascCount);
+                    shader->setValue("lightSpaceMatrices", decalLsm);
+                    shader->setValue("cascadeSplits",
+                                     kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
+                    shader->setValue("cascadeCount", decalCascCount);
+                    shader->setValue("shadowResolution", (float)shadowResolution);
+                    shader->setValue("shadowDebug", shadowDebug);
                     shader->setValue("enableShadow", enableShadow);
-                    shader->setValue("receiveShadow", false);
-                    shader->setValue("cascadeCount", std::max(1, std::min(shadowCascadeCount, kMaxShadowCascades)));
+                    shader->setValue("receiveShadow", true);
+                    shader->setValue("shadowBias", shadowBias);
+                    shader->setValue("shadowNormalBias", shadowNormalBias);
+                    shader->setValue("shadowNormalOffset", shadowNormalOffset);
+                    shader->setValue("shadowSoftness", shadowSoftness);
 
                     // Reset texture-presence flags so a previous draw's material
                     // doesn't leak its has_X flags onto this decal.
@@ -1396,7 +1444,8 @@ void main()
             // Editor gizmo icon: a billboard at the pivot drawn with a
             // dedicated icon material (the projection material carries the
             // decal artwork, so it cannot double as the icon).
-            if (kMaterial *iconMat = decal->getIconMaterial())
+            kMaterial *iconMat = decal->getIconMaterial();
+            if (editorGizmosEnabled && iconMat != nullptr)
             {
                 if (world->getMainCamera() != nullptr && iconMat->getShader() != nullptr)
                 {
@@ -1420,7 +1469,7 @@ void main()
                     iconShader->setValue("cameraRightWorldSpace", kVec3(iconView[0][0], iconView[1][0], iconView[2][0]));
                     iconShader->setValue("cameraUpWorldSpace", kVec3(iconView[0][1], iconView[1][1], iconView[2][1]));
                     iconShader->setValue("billboardPosition", decal->getGlobalPosition());
-                    iconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    iconShader->setValue("billboardSize", kVec2(iconGizmoSize, iconGizmoSize));
                     iconShader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < iconMat->getTextures().size(); ++l)
@@ -1444,7 +1493,7 @@ void main()
         {
             kLight *currentLight = (kLight *)currentNode;
 
-            if (world->getMainCamera() != nullptr && currentLight->getMaterial() != nullptr)
+            if (editorGizmosEnabled && world->getMainCamera() != nullptr && currentLight->getMaterial() != nullptr)
             {
                 kMat4 view = world->getMainCamera()->getViewMatrix();
                 kMat4 projection = world->getMainCamera()->getProjectionMatrix();
@@ -1468,7 +1517,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", currentLight->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(iconGizmoSize, iconGizmoSize));
                     shader->setValue("color", currentLight->getDiffuseColor());
 
                     for (size_t l = 0; l < currentLight->getMaterial()->getTextures().size(); l++)
@@ -1498,7 +1547,7 @@ void main()
             if (currentCamera == world->getMainCamera())
                 goto renderChildren;
 
-            if (world->getMainCamera() != nullptr && currentCamera->getMaterial() != nullptr)
+            if (editorGizmosEnabled && world->getMainCamera() != nullptr && currentCamera->getMaterial() != nullptr)
             {
                 kMat4 view = world->getMainCamera()->getViewMatrix();
                 kMat4 projection = world->getMainCamera()->getProjectionMatrix();
@@ -1522,7 +1571,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", currentCamera->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(iconGizmoSize, iconGizmoSize));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < currentCamera->getMaterial()->getTextures().size(); l++)
@@ -1546,7 +1595,7 @@ void main()
         {
             kObject *audioObj = currentNode;
 
-            if (world->getMainCamera() != nullptr && audioObj->getMaterial() != nullptr)
+            if (editorGizmosEnabled && world->getMainCamera() != nullptr && audioObj->getMaterial() != nullptr)
             {
                 kMat4 view = world->getMainCamera()->getViewMatrix();
                 kMat4 projection = world->getMainCamera()->getProjectionMatrix();
@@ -1570,7 +1619,7 @@ void main()
                     shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                     shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                     shader->setValue("billboardPosition", audioObj->getGlobalPosition());
-                    shader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                    shader->setValue("billboardSize", kVec2(iconGizmoSize, iconGizmoSize));
                     shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
 
                     for (size_t l = 0; l < audioObj->getMaterial()->getTextures().size(); l++)
@@ -1689,6 +1738,17 @@ void main()
                     boneTransforms = currentMesh->getAnimator()->getFinalBoneMatrices();
                 }
                 shadowShader->setValue("finalBonesMatrices", boneTransforms);
+
+                // Morph weights must match the shadow pass too, otherwise the
+                // depth geometry would use the un-morphed rest shape.
+                {
+                    std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+                    const std::vector<float> &mw = currentMesh->getMorphWeights();
+                    for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                        morphWeights[m] = mw[m];
+                    if (!mw.empty())
+                        shadowShader->setValue("morphWeights", morphWeights);
+                }
 
                 // Terrain height displacement: bind u_HeightMap if the mesh's
                 // material has it as a dynamic parameter.
@@ -1899,6 +1959,10 @@ layout (location = 0) in vec3 vertexPosition;
 layout (location = 2) in vec2 texCoord;
 layout (location = 6) in ivec4 boneIDs;
 layout (location = 7) in vec4 weights;
+layout (location = 8)  in vec3 morphPosition0;
+layout (location = 9)  in vec3 morphPosition1;
+layout (location = 10) in vec3 morphPosition2;
+layout (location = 11) in vec3 morphPosition3;
 
 uniform mat4 lightSpaceMatrix;
 uniform mat4 modelMatrix;
@@ -1909,10 +1973,18 @@ uniform float       u_HeightScale;
 
 const int MAX_BONES = 128;
 const int MAX_BONE_INFLUENCE = 4;
+const int MAX_MORPH_TARGETS = 4;
 uniform mat4 finalBonesMatrices[MAX_BONES];
+uniform float morphWeights[MAX_MORPH_TARGETS];
 
 void main()
 {
+    vec3 morphedPosition = vertexPosition;
+    morphedPosition += morphWeights[0] * morphPosition0;
+    morphedPosition += morphWeights[1] * morphPosition1;
+    morphedPosition += morphWeights[2] * morphPosition2;
+    morphedPosition += morphWeights[3] * morphPosition3;
+
     vec4 totalPosition = vec4(0.0);
     float totalWeight = 0.0;
 
@@ -1922,12 +1994,12 @@ void main()
         float weight = weights[i];
         if(boneID == -1 || weight <= 0.0) continue;
         if(boneID >= MAX_BONES) { totalPosition = vec4(0.0); break; }
-        totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
+        totalPosition += (finalBonesMatrices[boneID] * vec4(morphedPosition, 1.0)) * weight;
         totalWeight += weight;
     }
 
     if (totalWeight == 0.0)
-        totalPosition = vec4(vertexPosition, 1.0);
+        totalPosition = vec4(morphedPosition, 1.0);
 
     vec4 worldPos = modelMatrix * totalPosition;
     if (has_u_HeightMap)
@@ -2092,6 +2164,10 @@ void main() {}
 layout(location = 0) in vec3 vertexPosition;
 layout(location = 6) in ivec4 boneIDs;
 layout(location = 7) in vec4 weights;
+layout(location = 8)  in vec3 morphPosition0;
+layout(location = 9)  in vec3 morphPosition1;
+layout(location = 10) in vec3 morphPosition2;
+layout(location = 11) in vec3 morphPosition3;
 
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
@@ -2099,10 +2175,18 @@ uniform mat4 projectionMatrix;
 
 const int MAX_BONES = 128;
 const int MAX_BONE_INFLUENCE = 4;
+const int MAX_MORPH_TARGETS = 4;
 uniform mat4 finalBonesMatrices[MAX_BONES];
+uniform float morphWeights[MAX_MORPH_TARGETS];
 
 void main()
 {
+    vec3 morphedPosition = vertexPosition;
+    morphedPosition += morphWeights[0] * morphPosition0;
+    morphedPosition += morphWeights[1] * morphPosition1;
+    morphedPosition += morphWeights[2] * morphPosition2;
+    morphedPosition += morphWeights[3] * morphPosition3;
+
     vec4 totalPosition = vec4(0.0);
     float totalWeight = 0.0;
 
@@ -2112,12 +2196,12 @@ void main()
         float weight = weights[i];
         if (boneID == -1 || weight <= 0.0) continue;
         if (boneID >= MAX_BONES) { totalPosition = vec4(0.0); break; }
-        totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
+        totalPosition += (finalBonesMatrices[boneID] * vec4(morphedPosition, 1.0)) * weight;
         totalWeight += weight;
     }
 
     if (totalWeight == 0.0)
-        totalPosition = vec4(vertexPosition, 1.0);
+        totalPosition = vec4(morphedPosition, 1.0);
 
     gl_Position = projectionMatrix * viewMatrix * modelMatrix * totalPosition;
 })";
@@ -2244,6 +2328,16 @@ void main()
                     boneTransforms = currentMesh->getAnimator()->getFinalBoneMatrices();
                 pickingShader->setValue("finalBonesMatrices", boneTransforms);
 
+                // Morph weights so picking geometry matches the rendered shape.
+                {
+                    std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+                    const std::vector<float> &mw = currentMesh->getMorphWeights();
+                    for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                        morphWeights[m] = mw[m];
+                    if (!mw.empty())
+                        pickingShader->setValue("morphWeights", morphWeights);
+                }
+
                 currentMesh->draw();
             }
         }
@@ -2277,7 +2371,11 @@ void main()
                 pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
                 pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
                 pickingIconShader->setValue("billboardPosition", decal->getGlobalPosition());
-                pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+                // Follow the icon size (never below the legacy 0.8 so small icons
+                // stay comfortably clickable).
+                pickingIconShader->setValue("billboardSize",
+                    kVec2((iconGizmoSize > 0.8f) ? iconGizmoSize : 0.8f,
+                          (iconGizmoSize > 0.8f) ? iconGizmoSize : 0.8f));
                 pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                                idColor.g / 255.0f,
                                                                idColor.b / 255.0f));
@@ -2308,7 +2406,11 @@ void main()
             pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
             pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
             pickingIconShader->setValue("billboardPosition", currentNode->getGlobalPosition());
-            pickingIconShader->setValue("billboardSize", kVec2(0.8f, 0.8f));
+            // Follow the icon size (never below the legacy 0.8 so small icons
+            // stay comfortably clickable).
+            pickingIconShader->setValue("billboardSize",
+                kVec2((iconGizmoSize > 0.8f) ? iconGizmoSize : 0.8f,
+                      (iconGizmoSize > 0.8f) ? iconGizmoSize : 0.8f));
             pickingIconShader->setValue("pickColor", kVec3(idColor.r / 255.0f,
                                                            idColor.g / 255.0f,
                                                            idColor.b / 255.0f));
@@ -2480,6 +2582,15 @@ void main()
                 if (mesh->getSkinned() && mesh->getAnimator())
                     bones = mesh->getAnimator()->getFinalBoneMatrices();
                 shader->setValue("finalBonesMatrices", bones);
+
+                {
+                    std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+                    const std::vector<float> &mw = mesh->getMorphWeights();
+                    for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                        morphWeights[m] = mw[m];
+                    if (!mw.empty())
+                        shader->setValue("morphWeights", morphWeights);
+                }
 
                 // Resolve the material's albedo texture + tint for the albedo
                 // mode.
@@ -3007,8 +3118,11 @@ void main() { outColor = vec4(lineColor, 1.0); }
             {
                 node->calculateModelMatrix();
                 const kPhysicsObjectDesc &pd = node->getPhysicsDesc();
-                kVec3 pos = node->getGlobalPosition();
                 kQuat rot = node->getGlobalRotation();
+                // The collider is spawned offset from the object origin (see
+                // Manager::startPhysicsSimulation), so the debug wireframe must
+                // include that offset or it never appears to move.
+                kVec3 pos = node->getGlobalPosition() + rot * pd.shape.offset;
                 std::vector<float> verts;
 
                 // Local-axis vectors rotated into world space — colliders are

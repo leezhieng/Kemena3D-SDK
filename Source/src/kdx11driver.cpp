@@ -1544,6 +1544,32 @@ namespace kemena
         it->second.cbDirty[cbSlot] = true;
     }
 
+    void kDX11Driver::setUniformFloatArray(uint32_t progId, const kString &name,
+                                            const std::vector<float> &v)
+    {
+        auto it = programs.find(progId);
+        if (it == programs.end() || v.empty()) return;
+
+        // Morph weights are a flat float array ("morphWeights") that resolves
+        // through the same path logic as scalar/array uniforms.
+        uint32_t cbSlot = 0, offset = 0, elementSize = 0;
+        if (!resolveUniformPath(it->second, name, cbSlot, offset, elementSize))
+            return;
+
+        auto shadowIt = it->second.cbShadows.find(cbSlot);
+        if (shadowIt == it->second.cbShadows.end() || offset >= shadowIt->second.size())
+            return;
+
+        // Scalars need no transpose; clamp to the constant buffer's extent the
+        // same way the mat4-array path does.
+        size_t totalSize = v.size() * sizeof(float);
+        if (offset + totalSize > shadowIt->second.size())
+            totalSize = shadowIt->second.size() - offset;
+
+        memcpy(shadowIt->second.data() + offset, v.data(), totalSize);
+        it->second.cbDirty[cbSlot] = true;
+    }
+
     // =========================================================================
     // Vertex arrays
     // =========================================================================

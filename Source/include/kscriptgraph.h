@@ -214,6 +214,9 @@ namespace kemena
         // --- Interpolation (kept last to preserve serialised ids) --------------
         Lerp, ///< Moves a stored float toward a target over time at a set speed.
 
+        // --- GameObject lifecycle (kept last to preserve serialised ids) ------
+        Destroy, ///< Destroys a game object (removes it from the scene at runtime).
+
         Count ///< Sentinel (number of node types).
     };
 

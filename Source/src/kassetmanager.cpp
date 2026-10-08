@@ -862,6 +862,55 @@ static bool readResourceFile(const kString &resourceName, std::vector<char> &out
             // Extract bone weights for vertices
             extractBoneWeightForVertices(newMesh, mesh, scene, globalBoneMap);
 
+            // --- Morph targets (blend shapes) --------------------------------
+            // Assimp represents every shape as an aiAnimMesh holding *absolute*
+            // vertex positions (the importers build it with aiCreateAnimMesh()
+            // and then accumulate the shape offsets), so the delta the shader
+            // needs is simply (target - base), for glTF, FBX, USD and Collada
+            // alike. Targets beyond MAX_MORPH_TARGETS are dropped: the vertex
+            // shader has a fixed number of delta streams.
+            if (mesh->mNumAnimMeshes > 0)
+            {
+                for (unsigned int a = 0;
+                     a < mesh->mNumAnimMeshes && (int)a < kMesh::MAX_MORPH_TARGETS;
+                     ++a)
+                {
+                    const aiAnimMesh *animMesh = mesh->mAnimMeshes[a];
+                    if (animMesh == nullptr ||
+                        animMesh->mNumVertices != mesh->mNumVertices)
+                        continue;
+
+                    kMorphTarget target;
+                    target.name = kString(animMesh->mName.C_Str());
+                    if (target.name.empty())
+                        target.name = "Morph" + std::to_string(a);
+
+                    target.positionDeltas.reserve(mesh->mNumVertices);
+                    if (animMesh->mNormals != nullptr)
+                        target.normalDeltas.reserve(mesh->mNumVertices);
+
+                    for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+                    {
+                        const kVec3 base =
+                            kAssimpInternal::toVec3(mesh->mVertices[v]);
+                        const kVec3 shape =
+                            kAssimpInternal::toVec3(animMesh->mVertices[v]);
+                        target.positionDeltas.push_back(shape - base);
+
+                        if (animMesh->mNormals != nullptr)
+                        {
+                            const kVec3 baseN =
+                                kAssimpInternal::toVec3(mesh->mNormals[v]);
+                            const kVec3 shapeN =
+                                kAssimpInternal::toVec3(animMesh->mNormals[v]);
+                            target.normalDeltas.push_back(shapeN - baseN);
+                        }
+                    }
+
+                    newMesh->addMorphTarget(target);
+                }
+            }
+
             // Debug: Print bone data after extraction
             // std::cout << "Bone data after extraction:" << std::endl;
             /*

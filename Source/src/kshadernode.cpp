@@ -769,12 +769,14 @@ kString kShaderCompiler::vertexTemplate()
 
 const int MAX_BONES          = 128;
 const int MAX_BONE_INFLUENCE = 4;
+const int MAX_MORPH_TARGETS  = 4;
 
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform mat4 normalMatrix;
 uniform mat4 finalBonesMatrices[MAX_BONES];
+uniform float morphWeights[MAX_MORPH_TARGETS];
 
 layout(location = 0) in vec3  vertexPosition;
 layout(location = 1) in vec3  vertexColor;
@@ -785,6 +787,18 @@ layout(location = 5) in vec3  vertexBitangent;
 layout(location = 6) in ivec4 boneIDs;
 layout(location = 7) in vec4  weights;
 
+// Blend-shape (morph target) deltas, one stream per target. A mesh with fewer
+// targets than MAX_MORPH_TARGETS leaves the unused streams disabled, which GL
+// reads as (0,0,0) — a no-op — so the shader is safe for every mesh.
+layout(location = 8)  in vec3 morphPosition0;
+layout(location = 9)  in vec3 morphPosition1;
+layout(location = 10) in vec3 morphPosition2;
+layout(location = 11) in vec3 morphPosition3;
+layout(location = 12) in vec3 morphNormal0;
+layout(location = 13) in vec3 morphNormal1;
+layout(location = 14) in vec3 morphNormal2;
+layout(location = 15) in vec3 morphNormal3;
+
 out vec3 v_worldPos;
 out vec3 v_color;
 out vec2 v_texCoord;
@@ -794,6 +808,22 @@ out vec3 v_N;
 
 void main()
 {
+    // ------------------------------------------------------------------
+    // Blend shapes (morph targets) — applied BEFORE skinning, in object
+    // space, exactly like every other engine's vertex pipeline.
+    // ------------------------------------------------------------------
+    vec3 morphedPosition = vertexPosition;
+    vec3 morphedNormal   = vertexNormal;
+
+    morphedPosition += morphWeights[0] * morphPosition0;
+    morphedNormal   += morphWeights[0] * morphNormal0;
+    morphedPosition += morphWeights[1] * morphPosition1;
+    morphedNormal   += morphWeights[1] * morphNormal1;
+    morphedPosition += morphWeights[2] * morphPosition2;
+    morphedNormal   += morphWeights[2] * morphNormal2;
+    morphedPosition += morphWeights[3] * morphPosition3;
+    morphedNormal   += morphWeights[3] * morphNormal3;
+
     vec4  totalPos       = vec4(0.0);
     vec3  totalNormal    = vec3(0.0);
     vec3  totalTangent   = vec3(0.0);
@@ -813,23 +843,23 @@ void main()
             totalBitangent = vec3(0.0);
             break;
         }
-        totalPos       += finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0) * weight;
+        totalPos       += finalBonesMatrices[boneID] * vec4(morphedPosition, 1.0) * weight;
         mat3 nm         = transpose(inverse(mat3(finalBonesMatrices[boneID])));
-        totalNormal    += nm * vertexNormal    * weight;
+        totalNormal    += nm * morphedNormal   * weight;
         totalTangent   += nm * vertexTangent   * weight;
         totalBitangent += nm * vertexBitangent * weight;
         totalWeight    += weight;
     }
     if (totalWeight == 0.0)
     {
-        totalPos       = vec4(vertexPosition, 1.0);
-        totalNormal    = vertexNormal;
+        totalPos       = vec4(morphedPosition, 1.0);
+        totalNormal    = morphedNormal;
         totalTangent   = vertexTangent;
         totalBitangent = vertexBitangent;
     }
 
     bool anim = totalWeight > 0.0;
-    vec3 useN = anim ? totalNormal    : vertexNormal;
+    vec3 useN = anim ? totalNormal    : morphedNormal;
     vec3 useT = anim ? totalTangent   : vertexTangent;
     vec3 useB = anim ? totalBitangent : vertexBitangent;
 

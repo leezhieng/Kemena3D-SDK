@@ -475,6 +475,16 @@ namespace kemena
                            static_cast<GLsizei>(v.size()), GL_FALSE, glm::value_ptr(v[0]));
     }
 
+    void kOpenGLDriver::setUniformFloatArray(uint32_t progId, const kString &name, const std::vector<float> &v)
+    {
+        // Guard against an empty vector: glUniform1fv would read past a null
+        // pointer. An empty array is a valid "no morph targets" state.
+        if (v.empty())
+            return;
+        glUniform1fv(resolveUniformLocation(progId, name),
+                     static_cast<GLsizei>(v.size()), v.data());
+    }
+
     // -------------------------------------------------------------------------
     // Vertex arrays
     // -------------------------------------------------------------------------

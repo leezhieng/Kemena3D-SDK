@@ -108,6 +108,7 @@ namespace kemena
             case kScriptNodeType::GetAnimatorFloat:   return "Get Float";
             case kScriptNodeType::GetAnimatorInt:     return "Get Integer";
             case kScriptNodeType::Lerp:               return "Lerp";
+            case kScriptNodeType::Destroy:            return "Destroy";
             default:                                return "Node";
         }
     }
@@ -315,6 +316,14 @@ namespace kemena
                 out("", kScriptPinType::Exec);
                 break;
 
+            case kScriptNodeType::Destroy:
+                // Removes the target game object from the scene at runtime.
+                // The Target input defaults to the script's own object (getSelf()).
+                in("", kScriptPinType::Exec);
+                in("Target", kScriptPinType::Object);
+                out("", kScriptPinType::Exec);
+                break;
+
             case kScriptNodeType::SetVariable:
                 in("", kScriptPinType::Exec);
                 in("Value", kScriptPinType::Float);
@@ -418,7 +427,13 @@ namespace kemena
             case kScriptNodeType::CompareTag:
                 // The tag to compare against is chosen from the project's tag
                 // list via the payload picker (node.valueStr), like GetAction.
+                // The node branches on the result: execution leaves via "True"
+                // or "False". The "Result" data output is kept so the comparison
+                // can still be wired into a condition as a bool.
+                in("", kScriptPinType::Exec);
                 in("Target", kScriptPinType::Object);
+                out("True", kScriptPinType::Exec);
+                out("False", kScriptPinType::Exec);
                 out("Result", kScriptPinType::Bool);
                 break;
 
@@ -875,6 +890,61 @@ namespace kemena
                         std::stable_sort(n.outputs.begin(), n.outputs.end(), execFirst);
                         break;
                     }
+                    // Compare Tag gained an exec input plus "True"/"False" exec
+                    // outputs; older graphs stored only the Target input and the
+                    // Result output. Restore the missing pins so the node can
+                    // branch execution on the comparison result.
+                    case kScriptNodeType::CompareTag:
+                    {
+                        bool hasExecIn = false;
+                        for (const auto &p : n.inputs)
+                            if (p.type == kScriptPinType::Exec) { hasExecIn = true; break; }
+                        if (!hasExecIn)
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.type     = kScriptPinType::Exec;
+                            p.isOutput = false;
+                            n.inputs.insert(n.inputs.begin(), p);
+                        }
+
+                        auto hasExecOutNamed = [&](const char *nm) {
+                            for (const auto &p : n.outputs)
+                                if (p.type == kScriptPinType::Exec && p.name == nm)
+                                    return true;
+                            return false;
+                        };
+                        if (!hasExecOutNamed("True"))
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.name     = "True";
+                            p.type     = kScriptPinType::Exec;
+                            p.isOutput = true;
+                            n.outputs.insert(n.outputs.begin(), p);
+                        }
+                        if (!hasExecOutNamed("False"))
+                        {
+                            kScriptGraphPin p;
+                            p.id       = newId();
+                            p.name     = "False";
+                            p.type     = kScriptPinType::Exec;
+                            p.isOutput = true;
+                            // Keep display order True, False before the data pin.
+                            n.outputs.insert(n.outputs.begin() + 1, p);
+                        }
+
+                        // Normalise pin order: exec pins on top, data below.
+                        auto execFirst = [](const kScriptGraphPin &a,
+                                            const kScriptGraphPin &b) {
+                            return (a.type == kScriptPinType::Exec) &&
+                                   (b.type != kScriptPinType::Exec);
+                        };
+                        std::stable_sort(n.inputs.begin(), n.inputs.end(), execFirst);
+                        std::stable_sort(n.outputs.begin(), n.outputs.end(), execFirst);
+                        break;
+                    }
+
                     // Physics event nodes expose an "Other" object output; older
                     // graphs saved before that pin existed get it restored here.
                     case kScriptNodeType::EventCollisionEnter:
@@ -1340,6 +1410,8 @@ namespace kemena
                     case kScriptNodeType::SetActive:
                         return emitNamedInput(n, "Target") + ".setActive(" +
                                emitNamedInput(n, "Active") + ");";
+                    case kScriptNodeType::Destroy:
+                        return "destroyObject(" + emitNamedInput(n, "Target") + ");";
                     case kScriptNodeType::SetVariable:
                     {
                         if (n.valueStr.empty())
@@ -1518,6 +1590,30 @@ namespace kemena
                                 out += emitExec(target, indent, visited);
                         }
                         break; // a sequence ends the linear chain
+                    }
+
+                    if (n->type == kScriptNodeType::CompareTag)
+                    {
+                        // Compare Tag branches on its result: the "True" path
+                        // runs when the object's tag matches, otherwise the
+                        // "False" path runs. Like Branch, it ends the linear
+                        // chain.
+                        kString cond = emitNodeImpl(*n, 0);
+                        const kScriptGraphPin *tp = firstExecOut(*n, "True");
+                        const kScriptGraphPin *fp = firstExecOut(*n, "False");
+                        int tTarget = tp ? execTarget(*n, *tp) : 0;
+                        int fTarget = fp ? execTarget(*n, *fp) : 0;
+
+                        out += pad + "if (" + cond + ")\n" + pad + "{\n";
+                        out += emitExec(tTarget, indent + 4, visited);
+                        out += pad + "}\n";
+                        if (fTarget != 0)
+                        {
+                            out += pad + "else\n" + pad + "{\n";
+                            out += emitExec(fTarget, indent + 4, visited);
+                            out += pad + "}\n";
+                        }
+                        break; // compare tag ends the linear chain
                     }
 
                     // Named-input nodes are used two ways:

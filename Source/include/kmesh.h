@@ -24,16 +24,41 @@ namespace kemena
     class kAnimator;
 
     /**
+     * @brief One blend-shape (morph target) attached to a mesh.
+     *
+     * Stores the per-vertex *delta* from the base mesh in object space (target
+     * minus base), which is exactly what the vertex shader accumulates:
+     * @code
+     *   morphedPos += weight * positionDeltas[vertex];
+     * @endcode
+     * The delta representation is format agnostic — glTF targets are already
+     * deltas, and FBX absolute shapes are converted on import.
+     */
+    struct kMorphTarget
+    {
+        kString            name;           ///< Blend-shape name (e.g. "Blend0", "mouthSmile").
+        std::vector<kVec3> positionDeltas; ///< Per-vertex position delta (object space).
+        std::vector<kVec3> normalDeltas;   ///< Per-vertex normal delta; may be empty.
+    };
+
+    /**
      * @brief Scene-graph node that holds renderable geometry.
      *
      * Stores per-vertex attributes (position, UV, normal, tangent, bitangent,
      * colour, bone IDs, bone weights) together with an index buffer.  GPU
      * buffers are allocated lazily via generateVbo().  Supports both static
      * and skeletal-animated meshes through an optional kAnimator attachment.
+     *
+     * Also supports GPU blend shapes (morph targets): each target's deltas are
+     * uploaded as their own vertex stream and blended in the vertex shader by
+     * the per-target weights uploaded from getMorphWeights().
      */
     class KEMENA3D_API kMesh : public kObject
     {
     public:
+        /// Number of morph targets the vertex shader can blend (mirrors the
+        /// MAX_MORPH_TARGETS constant in the generated shader).
+        static const int MAX_MORPH_TARGETS = 4;
         /**
          * @brief Constructs a mesh node and optionally attaches it to a parent.
          * @param parentNode Parent scene-graph node, or nullptr for a root node.
@@ -511,6 +536,71 @@ namespace kemena
          */
         bool getSkinned();
 
+        // --- Morph targets (blend shapes) ------------------------------------
+
+        /**
+         * @brief Appends a morph target, if the MAX_MORPH_TARGETS budget allows.
+         * @param target Target to add (its deltas must be sized to the vertex count).
+         * @return Slot index the target was stored in, or -1 when at capacity.
+         */
+        int addMorphTarget(const kMorphTarget &target);
+
+        /**
+         * @brief Replaces the full morph-target set and resets all weights to 0.
+         * @param targets Targets to store (capped at MAX_MORPH_TARGETS).
+         */
+        void setMorphTargets(const std::vector<kMorphTarget> &targets);
+
+        /** @brief Returns the stored morph targets. */
+        const std::vector<kMorphTarget> &getMorphTargets() const { return morphTargets; }
+
+        /** @brief Number of stored morph targets. */
+        int getMorphTargetCount() const { return (int)morphTargets.size(); }
+
+        /** @brief True when this mesh carries at least one morph target. */
+        bool hasMorphTargets() const { return !morphTargets.empty(); }
+
+        /**
+         * @brief Finds a morph target slot by name.
+         * @param name Blend-shape name.
+         * @return Slot index, or -1 when no target has that name.
+         */
+        int findMorphTarget(const kString &name) const;
+
+        /**
+         * @brief Sets a morph weight by slot.
+         * @param slot Target index (out-of-range slots are ignored).
+         * @param w    Blend weight (clamped to >= 0).
+         */
+        void setMorphWeight(int slot, float w);
+
+        /**
+         * @brief Sets a morph weight by name (no-op when the name is unknown).
+         * @param name Blend-shape name.
+         * @param w    Blend weight (clamped to >= 0).
+         */
+        void setMorphWeight(const kString &name, float w);
+
+        /** @brief Weight of a slot (0 when out of range). */
+        float getMorphWeight(int slot) const;
+
+        /** @brief Weight of a named target (0 when unknown). */
+        float getMorphWeight(const kString &name) const;
+
+        /**
+         * @brief Replaces all weights at once.
+         * @param weights Per-target weights; resized to the target count.
+         */
+        void setMorphWeights(const std::vector<float> &weights);
+
+        /**
+         * @brief Returns the per-target weight array uploaded as morphWeights[N].
+         */
+        const std::vector<float> &getMorphWeights() const { return morphWeights; }
+
+        /** @brief Resets every morph weight to 0 (rest shape). */
+        void resetMorphWeights();
+
     protected:
     private:
         bool loaded = false;
@@ -536,6 +626,9 @@ namespace kemena
         std::vector<kIvec4> boneIDs;
         std::vector<kVec4> weights;
 
+        std::vector<kMorphTarget> morphTargets; ///< Blend shapes (deltas, object space).
+        std::vector<float>         morphWeights; ///< One weight per morph target.
+
         uint32_t vao = 0;        ///< Vertex Array Object handle.
         uint32_t indicesEbo = 0; ///< Element Buffer Object handle.
 
@@ -547,6 +640,9 @@ namespace kemena
         uint32_t bitangentBuffer = 0;   ///< Bitangent VBO.
         uint32_t boneIDBuffer = 0;      ///< Bone-index VBO.
         uint32_t weightBuffer = 0;      ///< Bone-weight VBO.
+
+        std::vector<uint32_t> morphPositionBuffers; ///< Per-target position-delta VBOs.
+        std::vector<uint32_t> morphNormalBuffers;   ///< Per-target normal-delta VBOs (may be empty).
 
         kMat3 normalMatrix; ///< Inverse-transpose of the model matrix (upper 3x3).
 

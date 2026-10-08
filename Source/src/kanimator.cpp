@@ -393,6 +393,41 @@ namespace kemena
     }
 
     // -----------------------------------------------------------------------
+    // Blend shapes (morph targets). Weights are forwarded to the driven mesh,
+    // which is the single storage location the renderer uploads, so animator
+    // and script writes never fight over separate copies.
+    // -----------------------------------------------------------------------
+
+    void kAnimator::setMorphWeight(const kString &name, float weight)
+    {
+        if (morphMesh != nullptr)
+            morphMesh->setMorphWeight(name, weight);
+    }
+
+    void kAnimator::setMorphWeight(int slot, float weight)
+    {
+        if (morphMesh != nullptr)
+            morphMesh->setMorphWeight(slot, weight);
+    }
+
+    float kAnimator::getMorphWeight(const kString &name) const
+    {
+        return morphMesh != nullptr ? morphMesh->getMorphWeight(name) : 0.0f;
+    }
+
+    void kAnimator::setMorphWeights(const std::vector<float> &weights)
+    {
+        if (morphMesh != nullptr)
+            morphMesh->setMorphWeights(weights);
+    }
+
+    std::vector<float> kAnimator::getMorphWeights() const
+    {
+        return morphMesh != nullptr ? morphMesh->getMorphWeights()
+                                    : std::vector<float>();
+    }
+
+    // -----------------------------------------------------------------------
     // Root-motion extraction.
     // -----------------------------------------------------------------------
 

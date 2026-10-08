@@ -207,6 +207,7 @@ namespace kemena
          * @param v      Matrices to upload.
          */
         void setUniformMat4Array(uint32_t progId, const kString &name, const std::vector<kMat4> &v) override;
+        void setUniformFloatArray(uint32_t progId, const kString &name, const std::vector<float> &v) override;
 
         // --- Vertex arrays ---------------------------------------------------
 

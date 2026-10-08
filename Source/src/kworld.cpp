@@ -516,6 +516,8 @@ namespace kemena
             if (node->getHasPhysicsDesc())
             {
                 kPhysicsObjectDesc desc = node->getPhysicsDesc();
+                // The collider offset is applied to the shape (see
+                // kPhysicsObject::init), so the body origin stays at the object.
                 desc.position = node->getGlobalPosition();
                 desc.rotation = node->getGlobalRotation();
 
@@ -897,6 +899,13 @@ namespace kemena
             if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
                 decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
                                                obj["decal_size"][1].get<float>()));
+            // Projection layer mask: which object layers this decal projects
+            // onto. Stored as "decal_layers"; defaults to all layers so files
+            // written before this field existed keep projecting everywhere.
+            if (obj.contains("decal_layers") && obj["decal_layers"].is_number_unsigned())
+                decal->setProjectionLayerMask(obj["decal_layers"].get<uint32_t>());
+            else if (obj.contains("decal_layers") && obj["decal_layers"].is_number_integer())
+                decal->setProjectionLayerMask((uint32_t)obj["decal_layers"].get<int64_t>());
             if (topLevel) scene->addObject(decal, uuid);
             else { decal->setUuid(uuid.empty() ? generateUuid() : uuid); decal->setParent(parent); }
             result = decal;

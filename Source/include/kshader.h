@@ -161,6 +161,8 @@ namespace kemena
 
         /** @brief Sets a kMat4 array uniform. */
         void setValue(kString name, std::vector<kMat4> value);
+        /** @brief Sets a float array uniform (e.g. morph target weights). */
+        void setValue(kString name, std::vector<float> value);
         /** @brief Sets a kMat4 uniform. */
         void setValue(kString name, kMat4 value);
         /** @brief Sets a kVec4 uniform. */

@@ -37,6 +37,13 @@ namespace kemena
             driver->deleteBuffer(boneIDBuffer);
         if (weightBuffer)
             driver->deleteBuffer(weightBuffer);
+
+        for (uint32_t b : morphPositionBuffers)
+            if (b)
+                driver->deleteBuffer(b);
+        for (uint32_t b : morphNormalBuffers)
+            if (b)
+                driver->deleteBuffer(b);
     }
 
     void kMesh::setLoaded(bool newLoaded)
@@ -480,6 +487,45 @@ namespace kemena
             driver->setVertexAttribFloat(7, 4, sizeof(kVec4), 0);
         }
 
+        // Morph targets. Positions land in locations 8..11 and normal deltas in
+        // 12..15 (one stream per target, mirroring the one-buffer-per-attribute
+        // layout used above). A target with no normal deltas simply skips its
+        // normal stream; the vertex shader treats a missing stream as zeros.
+        {
+            const size_t morphCount =
+                (morphTargets.size() < (size_t)MAX_MORPH_TARGETS)
+                    ? morphTargets.size()
+                    : (size_t)MAX_MORPH_TARGETS;
+
+            morphPositionBuffers.assign(morphCount, 0);
+            morphNormalBuffers.assign(morphCount, 0);
+
+            for (size_t t = 0; t < morphCount; ++t)
+            {
+                const kMorphTarget &mt = morphTargets[t];
+
+                if (!mt.positionDeltas.empty() &&
+                    mt.positionDeltas.size() == vertices.size())
+                {
+                    uint32_t buf = driver->createBuffer();
+                    driver->uploadVertexBuffer(buf, mt.positionDeltas.data(),
+                                               mt.positionDeltas.size() * sizeof(kVec3));
+                    driver->setVertexAttribFloat(8 + (int)t, 3, sizeof(kVec3), 0);
+                    morphPositionBuffers[t] = buf;
+                }
+
+                if (!mt.normalDeltas.empty() &&
+                    mt.normalDeltas.size() == vertices.size())
+                {
+                    uint32_t buf = driver->createBuffer();
+                    driver->uploadVertexBuffer(buf, mt.normalDeltas.data(),
+                                               mt.normalDeltas.size() * sizeof(kVec3));
+                    driver->setVertexAttribFloat(12 + (int)t, 3, sizeof(kVec3), 0);
+                    morphNormalBuffers[t] = buf;
+                }
+            }
+        }
+
         driver->unbindVertexArray();
 
         computeLocalAABB();
@@ -684,6 +730,12 @@ namespace kemena
         animator = newAnimator;
         setSkinned(true);
 
+        // Let the animator drive this mesh's blend shapes: it forwards
+        // setMorphWeight() calls into the mesh's own weight array, which is
+        // what the renderer uploads each frame.
+        if (animator != nullptr)
+            animator->setMorphMesh(this);
+
         if (getChildren().size() > 0)
         {
             for (size_t i = 0; i < getChildren().size(); ++i)
@@ -712,5 +764,76 @@ namespace kemena
     bool kMesh::getSkinned()
     {
         return isSkinned;
+    }
+
+    // --- Morph targets (blend shapes) ----------------------------------------
+
+    int kMesh::addMorphTarget(const kMorphTarget &target)
+    {
+        if ((int)morphTargets.size() >= MAX_MORPH_TARGETS)
+            return -1;
+
+        // Deltas must be one-per-vertex, otherwise the per-vertex attribute
+        // stream would desync from the base geometry. Reject malformed targets
+        // so a partial/failed import cannot corrupt the draw.
+        if (!vertices.empty() && target.positionDeltas.size() != vertices.size())
+            return -1;
+
+        morphTargets.push_back(target);
+        morphWeights.push_back(0.0f);
+        return (int)morphTargets.size() - 1;
+    }
+
+    void kMesh::setMorphTargets(const std::vector<kMorphTarget> &targets)
+    {
+        morphTargets.clear();
+        morphWeights.clear();
+        for (const kMorphTarget &t : targets)
+            addMorphTarget(t);
+        morphWeights.assign(morphTargets.size(), 0.0f);
+    }
+
+    int kMesh::findMorphTarget(const kString &name) const
+    {
+        for (size_t i = 0; i < morphTargets.size(); ++i)
+            if (morphTargets[i].name == name)
+                return (int)i;
+        return -1;
+    }
+
+    void kMesh::setMorphWeight(int slot, float w)
+    {
+        if (slot < 0 || slot >= (int)morphWeights.size())
+            return;
+        morphWeights[slot] = (w < 0.0f) ? 0.0f : w;
+    }
+
+    void kMesh::setMorphWeight(const kString &name, float w)
+    {
+        setMorphWeight(findMorphTarget(name), w);
+    }
+
+    float kMesh::getMorphWeight(int slot) const
+    {
+        if (slot < 0 || slot >= (int)morphWeights.size())
+            return 0.0f;
+        return morphWeights[slot];
+    }
+
+    float kMesh::getMorphWeight(const kString &name) const
+    {
+        return getMorphWeight(findMorphTarget(name));
+    }
+
+    void kMesh::setMorphWeights(const std::vector<float> &weights)
+    {
+        morphWeights.assign(morphTargets.size(), 0.0f);
+        for (size_t i = 0; i < weights.size() && i < morphWeights.size(); ++i)
+            morphWeights[i] = (weights[i] < 0.0f) ? 0.0f : weights[i];
+    }
+
+    void kMesh::resetMorphWeights()
+    {
+        morphWeights.assign(morphTargets.size(), 0.0f);
     }
 }

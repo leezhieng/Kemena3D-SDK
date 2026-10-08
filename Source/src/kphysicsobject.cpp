@@ -16,6 +16,7 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
+#include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #ifdef _MSC_VER
 #  pragma warning(pop)
@@ -172,6 +173,29 @@ namespace kemena
                                          JPH::Vec3(sd.customScale.x,
                                                    sd.customScale.y,
                                                    sd.customScale.z));
+        }
+
+        // Apply the user-authored local offset by wrapping the shape in a
+        // RotatedTranslatedShape. The collider geometry is shifted relative to
+        // the body origin, while the body origin itself stays at the spawn
+        // position (Jolt's BodyInterface::GetPosition() returns the origin, so
+        // the owning object does NOT move). Works for every shape type,
+        // including the mesh-derived ones above.
+        if (sd.offset.x != 0.0f || sd.offset.y != 0.0f || sd.offset.z != 0.0f)
+        {
+            JPH::RotatedTranslatedShapeSettings rts(
+                JPH::Vec3(sd.offset.x, sd.offset.y, sd.offset.z),
+                JPH::Quat::sIdentity(), shape.GetPtr());
+            auto res = rts.Create();
+            if (res.HasError())
+            {
+                std::cout << "[kPhysicsObject] Shape offset wrap failed: "
+                          << res.GetError().c_str() << std::endl;
+            }
+            else
+            {
+                shape = res.Get();
+            }
         }
 
         // Jolt's MeshShape and PlaneShape only allow Static / Kinematic motion.

@@ -318,6 +318,18 @@ namespace kemena
          */
         virtual void setUniformMat4Array(uint32_t progId, const kString &name, const std::vector<kMat4> &v) = 0;
 
+        /**
+         * @brief Sets a float array uniform on the given program.
+         *
+         * Used by GPU morph targets: the renderer uploads a mesh's per-target
+         * blend weights (see kMesh::getMorphWeights()) into the
+         * @c morphWeights[N] uniform declared by the generated vertex shader.
+         * @param progId Program handle.
+         * @param name   Uniform array name.
+         * @param v      Array of floats (one per morph target).
+         */
+        virtual void setUniformFloatArray(uint32_t progId, const kString &name, const std::vector<float> &v) = 0;
+
         // --- Vertex arrays ---------------------------------------------------
 
         /**

@@ -74,6 +74,10 @@ namespace kemena
      * | Mesh       | meshVertices + meshIndices + customScale       |
      * | Plane      | halfExtents.x / halfExtents.z (broadphase rect)|
      *
+     * @c offset shifts the whole collider relative to the owning object's
+     * origin (in the object's local space). It applies to every shape type and
+     * defaults to (0,0,0) — i.e. the collider is centred on the object.
+     *
      * @c meshVertices / @c meshIndices are populated by the caller right before
      * kPhysicsManager::createObject() (typically from the owning kMesh) — they
      * aren't serialised because they're derived from the mesh asset.
@@ -88,6 +92,7 @@ namespace kemena
         kVec3                 halfExtents = kVec3(0.5f, 0.5f, 0.5f); ///< Box / Plane: per-axis half-extents (Plane uses x,z).
         float                 radius      = 0.5f;                   ///< Sphere / Capsule / Cylinder radius.
         float                 height      = 1.0f;                   ///< Capsule / Cylinder total height.
+        kVec3                 offset      = kVec3(0.0f, 0.0f, 0.0f);///< Local-space position offset of the collider from the object origin.
         kVec3                 customScale = kVec3(1.0f, 1.0f, 1.0f);///< ConvexHull / Mesh per-axis scale.
         std::vector<kVec3>    meshVertices;                         ///< Mesh / ConvexHull source vertices.
         std::vector<uint32_t> meshIndices;                          ///< Mesh source indices (triplets per triangle).

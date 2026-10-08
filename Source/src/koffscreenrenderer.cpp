@@ -38,25 +38,37 @@ namespace kemena
         layout(location = 0) in vec3 aPosition;
         layout(location = 6) in ivec4 boneIDs;
         layout(location = 7) in vec4 weights;
+        layout(location = 8)  in vec3 morphPosition0;
+        layout(location = 9)  in vec3 morphPosition1;
+        layout(location = 10) in vec3 morphPosition2;
+        layout(location = 11) in vec3 morphPosition3;
         uniform mat4 modelMatrix;
         uniform mat4 viewMatrix;
         uniform mat4 projectionMatrix;
         const int MAX_BONES          = 128;
         const int MAX_BONE_INFLUENCE = 4;
+        const int MAX_MORPH_TARGETS  = 4;
         uniform mat4 finalBoneMatrices[MAX_BONES];
+        uniform float morphWeights[MAX_MORPH_TARGETS];
         void main() {
-            vec4 totalPosition = vec4(aPosition, 1.0);
+            vec3 morphedPosition = aPosition;
+            morphedPosition += morphWeights[0] * morphPosition0;
+            morphedPosition += morphWeights[1] * morphPosition1;
+            morphedPosition += morphWeights[2] * morphPosition2;
+            morphedPosition += morphWeights[3] * morphPosition3;
+
+            vec4 totalPosition = vec4(morphedPosition, 1.0);
             float totalWeight = 0.0;
             for (int i = 0; i < MAX_BONE_INFLUENCE; i++)
             {
                 int boneID = boneIDs[i];
                 float weight = weights[i];
                 if (boneID == -1 || weight <= 0.0) continue;
-                if (boneID >= MAX_BONES) { totalPosition = vec4(aPosition, 1.0); break; }
-                totalPosition += (finalBoneMatrices[boneID] * vec4(aPosition, 1.0)) * weight;
+                if (boneID >= MAX_BONES) { totalPosition = vec4(morphedPosition, 1.0); break; }
+                totalPosition += (finalBoneMatrices[boneID] * vec4(morphedPosition, 1.0)) * weight;
                 totalWeight += weight;
             }
-            if (totalWeight == 0.0) totalPosition = vec4(aPosition, 1.0);
+            if (totalWeight == 0.0) totalPosition = vec4(morphedPosition, 1.0);
             gl_Position = projectionMatrix * viewMatrix * modelMatrix * totalPosition;
         }
     )";
@@ -176,13 +188,25 @@ void main() {}
 layout (location = 0) in vec3 vertexPosition;
 layout (location = 6) in ivec4 boneIDs;
 layout (location = 7) in vec4 weights;
+layout (location = 8)  in vec3 morphPosition0;
+layout (location = 9)  in vec3 morphPosition1;
+layout (location = 10) in vec3 morphPosition2;
+layout (location = 11) in vec3 morphPosition3;
 uniform mat4 lightSpaceMatrix;
 uniform mat4 modelMatrix;
 const int MAX_BONES          = 128;
 const int MAX_BONE_INFLUENCE = 4;
+const int MAX_MORPH_TARGETS  = 4;
 uniform mat4 finalBonesMatrices[MAX_BONES];
+uniform float morphWeights[MAX_MORPH_TARGETS];
 void main()
 {
+    vec3 morphedPosition = vertexPosition;
+    morphedPosition += morphWeights[0] * morphPosition0;
+    morphedPosition += morphWeights[1] * morphPosition1;
+    morphedPosition += morphWeights[2] * morphPosition2;
+    morphedPosition += morphWeights[3] * morphPosition3;
+
     vec4 totalPosition = vec4(0.0);
     float totalWeight = 0.0;
     for(int i = 0; i < MAX_BONE_INFLUENCE; i++)
@@ -191,10 +215,10 @@ void main()
         float weight = weights[i];
         if(boneID == -1 || weight <= 0.0) continue;
         if(boneID >= MAX_BONES) { totalPosition = vec4(0.0); break; }
-        totalPosition += (finalBonesMatrices[boneID] * vec4(vertexPosition, 1.0)) * weight;
+        totalPosition += (finalBonesMatrices[boneID] * vec4(morphedPosition, 1.0)) * weight;
         totalWeight += weight;
     }
-    if (totalWeight == 0.0) totalPosition = vec4(vertexPosition, 1.0);
+    if (totalWeight == 0.0) totalPosition = vec4(morphedPosition, 1.0);
     gl_Position = lightSpaceMatrix * (modelMatrix * totalPosition);
 })";
         shadowShader = new kShader();
@@ -237,6 +261,16 @@ void main()
                 if (mesh->getSkinned() && mesh->getAnimator() != nullptr)
                     bones = mesh->getAnimator()->getFinalBoneMatrices();
                 shader->setValue("finalBonesMatrices", bones);
+
+                {
+                    std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+                    const std::vector<float> &mw = mesh->getMorphWeights();
+                    for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                        morphWeights[m] = mw[m];
+                    if (!mw.empty())
+                        shader->setValue("morphWeights", morphWeights);
+                }
+
                 mesh->draw();
             }
         }
@@ -665,6 +699,15 @@ void main()
             bones = mesh->getAnimator()->getFinalBoneMatrices();
         builtinShader->setValue("finalBoneMatrices", bones);
 
+        {
+            std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+            const std::vector<float> &mw = mesh->getMorphWeights();
+            for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                morphWeights[m] = mw[m];
+            if (!mw.empty())
+                builtinShader->setValue("morphWeights", morphWeights);
+        }
+
         mesh->draw();
         builtinShader->unuse();
     }
@@ -705,6 +748,15 @@ void main()
         if (mesh->getSkinned() && mesh->getAnimator() != nullptr)
             bones = mesh->getAnimator()->getFinalBoneMatrices();
         shader->setValue("finalBonesMatrices", bones);
+
+        {
+            std::vector<float> morphWeights((size_t)kMesh::MAX_MORPH_TARGETS, 0.0f);
+            const std::vector<float> &mw = mesh->getMorphWeights();
+            for (size_t m = 0; m < mw.size() && m < morphWeights.size(); ++m)
+                morphWeights[m] = mw[m];
+            if (!mw.empty())
+                shader->setValue("morphWeights", morphWeights);
+        }
 
         // Reset texture-presence flags so a previous draw whose material had
         // (e.g.) an albedoMap doesn't leave has_albedoMap=true on the shader

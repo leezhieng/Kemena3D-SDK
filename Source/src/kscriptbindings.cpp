@@ -90,6 +90,31 @@ namespace kemena
     static void  objSetActive(kObject *o, bool a)               { o->setActive(a); }
     static kObject *objGetParent(kObject *o)                    { return o->getParent(); }
 
+    // Destroys a game object at runtime: detaches it (and its subtree) from the
+    // scene graph and releases its physics body, so it stops rendering, updating
+    // and colliding. The owning kObject memory is intentionally retained so any
+    // lingering script handle cannot dangle. Safe to call on a null handle.
+    static void  objDestroy(kObject *o)
+    {
+        if (o == nullptr)
+            return;
+
+        if (g_boundManager)
+        {
+            if (kPhysicsManager *pm = g_boundManager->getPhysicsManager())
+            {
+                if (kPhysicsObject *body = o->getPhysicsObject())
+                {
+                    o->detachPhysics();
+                    pm->destroyObject(body);
+                }
+            }
+        }
+
+        o->setActive(false);
+        o->detachFromParent();
+    }
+
     // -----------------------------------------------------------------------
     // Global functions
     // -----------------------------------------------------------------------
@@ -281,6 +306,12 @@ namespace kemena
     static float animatorGetFloat(kAnimator *a, const kString &name)              { return a ? a->getVariable(name) : 0.0f; }
     static bool  animatorGetBool(kAnimator *a, const kString &name)               { return a ? (a->getVariable(name) != 0.0f) : false; }
     static int   animatorGetInt(kAnimator *a, const kString &name)                { return a ? (int)a->getVariable(name) : 0; }
+
+    // Blend shapes (morph targets): forwarded through the animator to the mesh
+    // it drives, so a script animates a face without touching the mesh directly.
+    static void  animatorSetMorphWeight(kAnimator *a, const kString &name, float w) { if (a) a->setMorphWeight(name, w); }
+    static void  animatorSetMorphWeightSlot(kAnimator *a, int slot, float w)        { if (a) a->setMorphWeight(slot, w); }
+    static float animatorGetMorphWeight(kAnimator *a, const kString &name)          { return a ? a->getMorphWeight(name) : 0.0f; }
 
     static float skeletalAnimGetDuration(kSkeletalAnimation *a)     { return a ? a->getDuration() : 0.0f; }
     static float skeletalAnimGetTicksPerSecond(kSkeletalAnimation *a) { return a ? a->getTicksPerSecond() : 0.0f; }
@@ -478,6 +509,8 @@ namespace kemena
                                     asFUNCTION(objGetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "void setActive(bool)",
                                     asFUNCTION(objSetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kObject", "void destroy()",
+                                    asFUNCTION(objDestroy), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "kObject@ getParent() const",
                                     asFUNCTION(objGetParent), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
@@ -588,6 +621,14 @@ namespace kemena
         r = e->RegisterObjectMethod("kAnimator", "int getInt(const string &in)",
                                     asFUNCTION(animatorGetInt), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
+        // --- Blend shapes (morph targets) -------------------------------------
+        r = e->RegisterObjectMethod("kAnimator", "void setMorphWeight(const string &in, float)",
+                                    asFUNCTION(animatorSetMorphWeight), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "void setMorphWeightByIndex(int, float)",
+                                    asFUNCTION(animatorSetMorphWeightSlot), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+        r = e->RegisterObjectMethod("kAnimator", "float getMorphWeight(const string &in) const",
+                                    asFUNCTION(animatorGetMorphWeight), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+
         r = e->RegisterObjectMethod("kSkeletalAnimation", "float getDuration() const",
                                     asFUNCTION(skeletalAnimGetDuration), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kSkeletalAnimation", "float getTicksPerSecond() const",
@@ -667,6 +708,8 @@ namespace kemena
                                       asFUNCTION(scriptPrint), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("void printConsole(const string &in)",
                                       asFUNCTION(scriptPrint), asCALL_CDECL); assert(r >= 0);
+        r = e->RegisterGlobalFunction("void destroyObject(kObject@)",
+                                      asFUNCTION(objDestroy), asCALL_CDECL); assert(r >= 0);
 
         // --- Named input ------------------------------------------------------
         r = e->RegisterGlobalFunction("bool getAction(const string &in)",

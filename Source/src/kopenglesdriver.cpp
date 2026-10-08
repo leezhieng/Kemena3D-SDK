@@ -1030,6 +1030,18 @@ namespace kemena
                            glm::value_ptr(v[0]));
     }
 
+    void kOpenGLESDriver::setUniformFloatArray(uint32_t progId, const kString &name,
+                                               const std::vector<float> &v)
+    {
+        // Same empty-vector hazard as the mat4 array path above: a mesh with no
+        // morph targets still reaches this call with an empty weight array.
+        if (progId == 0 || v.empty())
+            return;
+
+        glUniform1fv(glGetUniformLocation(static_cast<GLuint>(progId), name.c_str()),
+                     static_cast<GLsizei>(v.size()), v.data());
+    }
+
     // =------------------------------------------------------------------------
     // Vertex arrays
     // =------------------------------------------------------------------------

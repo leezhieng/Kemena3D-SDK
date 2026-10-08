@@ -320,6 +320,34 @@ namespace kemena
         /** @brief Returns the registered non-skeletal clip, or nullptr. */
         kAnimation *getObjectAnimation() const;
 
+        // --- Blend shapes (morph targets) ------------------------------------
+        // The animator is the natural owner of time-varying state, so it can
+        // drive a character's blend shapes (facial expressions, visemes...) by
+        // forwarding weights through to the mesh it is attached to. The mesh
+        // remains the single storage location, which is what the renderer
+        // uploads, so animator-driven and script-driven weights never diverge.
+
+        /** @brief Sets the mesh whose morph weights this animator drives. */
+        void setMorphMesh(kMesh *newMorphMesh) { morphMesh = newMorphMesh; }
+
+        /** @brief Mesh whose morph weights this animator drives (may be nullptr). */
+        kMesh *getMorphMesh() const { return morphMesh; }
+
+        /** @brief Sets a morph weight by blend-shape name (forwarded to the mesh). */
+        void setMorphWeight(const kString &name, float weight);
+
+        /** @brief Sets a morph weight by slot (forwarded to the mesh). */
+        void setMorphWeight(int slot, float weight);
+
+        /** @brief Weight of a named blend shape (0 when unknown / no mesh). */
+        float getMorphWeight(const kString &name) const;
+
+        /** @brief Replaces every morph weight at once (forwarded to the mesh). */
+        void setMorphWeights(const std::vector<float> &weights);
+
+        /** @brief Current per-target morph weights (empty when no mesh is set). */
+        std::vector<float> getMorphWeights() const;
+
     private:
         // Skeletal playback state.
         std::vector<kMat4>               finalBoneMatrices;             ///< Per-bone matrices.
@@ -328,6 +356,8 @@ namespace kemena
 
         // Non-skeletal placeholder.
         kAnimation                      *objectAnimation = nullptr;       ///< Registered non-skeletal clip (not yet driven).
+
+        kMesh                           *morphMesh = nullptr;             ///< Mesh whose blend shapes this animator drives.
 
         // Named controller variables (bool/float/int/trigger stored as floats).
         std::unordered_map<kString, float> variables;                     ///< Controller variable values.

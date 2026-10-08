@@ -139,6 +139,11 @@ namespace kemena
         kDriver::getCurrent()->setUniformMat4Array(shaderProgram, name, value);
     }
 
+    void kShader::setValue(kString name, std::vector<float> value)
+    {
+        kDriver::getCurrent()->setUniformFloatArray(shaderProgram, name, value);
+    }
+
     void kShader::setValue(kString name, kMat4 value)
     {
         kDriver::getCurrent()->setUniformMat4(shaderProgram, name, value);
