@@ -221,10 +221,11 @@ namespace kemena
         return scriptManager;
     }
 
-    // Recursively flattens a scene-graph subtree into out.
+    // Recursively flattens a scene-graph subtree into out. Destroyed nodes (and
+    // their subtrees) are skipped so their scripts stop dispatching.
     static void collectSubtree(kObject *node, std::vector<kObject *> &out)
     {
-        if (!node)
+        if (!node || node->isDestroyed())
             return;
         out.push_back(node);
         for (kObject *child : node->getChildren())
@@ -516,10 +517,11 @@ namespace kemena
             if (node->getHasPhysicsDesc())
             {
                 kPhysicsObjectDesc desc = node->getPhysicsDesc();
-                // The collider offset is applied to the shape (see
-                // kPhysicsObject::init), so the body origin stays at the object.
-                desc.position = node->getGlobalPosition();
-                desc.rotation = node->getGlobalRotation();
+                // Compose the collider offset into the body transform so the
+                // collider sits at its authored offset from the object's pivot.
+                kQuat worldRot = node->getGlobalRotation();
+                desc.position = node->getGlobalPosition() + worldRot * desc.offsetPosition;
+                desc.rotation = worldRot * desc.offsetRotation;
 
                 // Mesh / ConvexHull shapes pull their geometry from the
                 // owning kMesh. Not serialised — re-fetched on every Play.
@@ -889,23 +891,12 @@ namespace kemena
             decal->setStatic(obj.value("static", false));
             decal->setShaderType(obj.value("decal_shader", std::string("flat")));
             decal->setSurfaceOffset(obj.value("decal_offset", 0.01f));
-            // Projection parameters (added with the projected-decal system).
-            // Older files simply omit them and keep the defaults.
-            if (obj.contains("decal_dir") && obj["decal_dir"].is_array() && obj["decal_dir"].size() == 3)
-                decal->setProjectionDirection(kVec3(obj["decal_dir"][0].get<float>(),
-                                                    obj["decal_dir"][1].get<float>(),
-                                                    obj["decal_dir"][2].get<float>()));
-            decal->setProjectionDistance(obj.value("decal_distance", 2.0f));
-            if (obj.contains("decal_size") && obj["decal_size"].is_array() && obj["decal_size"].size() == 2)
-                decal->setProjectionSize(kVec2(obj["decal_size"][0].get<float>(),
-                                               obj["decal_size"][1].get<float>()));
-            // Projection layer mask: which object layers this decal projects
-            // onto. Stored as "decal_layers"; defaults to all layers so files
-            // written before this field existed keep projecting everywhere.
-            if (obj.contains("decal_layers") && obj["decal_layers"].is_number_unsigned())
-                decal->setProjectionLayerMask(obj["decal_layers"].get<uint32_t>());
-            else if (obj.contains("decal_layers") && obj["decal_layers"].is_number_integer())
-                decal->setProjectionLayerMask((uint32_t)obj["decal_layers"].get<int64_t>());
+            // The projection volume is derived from the object's transform, so
+            // the legacy decal_dir / decal_distance / decal_size keys are ignored.
+            // Projection layer mask — which object layers this decal projects
+            // onto. Older files omit it and fall back to all layers.
+            decal->setProjectionLayerMask(
+                static_cast<uint32_t>(obj.value("decal_layers", 4294967295u)));
             if (topLevel) scene->addObject(decal, uuid);
             else { decal->setUuid(uuid.empty() ? generateUuid() : uuid); decal->setParent(parent); }
             result = decal;
@@ -963,6 +954,19 @@ namespace kemena
             d.angularDamping = phys.value("angular_damping", 0.05f);
             d.gravityFactor  = phys.value("gravity_factor", 1.0f);
             d.layer          = phys.value("layer", "Default");
+            // Collider offset from the object's pivot (older files omit these).
+            if (phys.contains("offset_position") && phys["offset_position"].is_object())
+            {
+                const auto &op = phys["offset_position"];
+                d.offsetPosition = kVec3(op.value("x", 0.0f), op.value("y", 0.0f),
+                                         op.value("z", 0.0f));
+            }
+            if (phys.contains("offset_rotation") && phys["offset_rotation"].is_object())
+            {
+                const auto &orr = phys["offset_rotation"];
+                d.offsetRotation = kQuat(orr.value("w", 1.0f), orr.value("x", 0.0f),
+                                         orr.value("y", 0.0f), orr.value("z", 0.0f));
+            }
             result->setHasPhysicsDesc(true);
         }
 

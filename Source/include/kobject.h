@@ -232,6 +232,18 @@ namespace kemena
         void setActive(bool newActive);
 
         /**
+         * @brief Returns whether this object was destroyed at runtime.
+         *
+         * A destroyed object is skipped by the script/scene-graph walks (so its
+         * scripts stop dispatching) and is hidden via setActive(false). It stays
+         * parented so the editor can restore it when Play stops.
+         */
+        bool isDestroyed() const { return destroyed; }
+
+        /** @brief Marks/unmarks this object as destroyed at runtime. */
+        void setDestroyed(bool value) { destroyed = value; }
+
+        /**
          * @brief Returns whether this object is marked as static (immobile geometry).
          * @return true if the object will be indexed in the static octree.
          */
@@ -677,6 +689,7 @@ namespace kemena
         bool isActive   = true;
         bool isStatic   = false;
         bool debugMode  = false;
+        bool destroyed  = false; ///< Runtime destroy flag (see setDestroyed()).
 
         kNodeType type = NODE_TYPE_OBJECT;
         unsigned int id = 0;

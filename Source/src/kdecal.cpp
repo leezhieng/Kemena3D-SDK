@@ -21,37 +21,6 @@ namespace kemena
             kVec3 nrm; ///< World-space normal.
         };
 
-        /// Builds an orthonormal lateral basis (axisX, axisY) perpendicular to
-        /// the (normalised) projection axis @p dir, biased toward the object's
-        /// local +X so rotating the decal about the projection axis rolls the
-        /// texture.
-        void buildProjectionBasis(const kVec3 &dir, kVec3 &axisX, kVec3 &axisY)
-        {
-            kVec3 d = dir;
-            float len = glm::length(d);
-            if (len < 1e-6f)
-                d = kVec3(0.0f, -1.0f, 0.0f);
-            else
-                d /= len;
-
-            // Project the object's local +X onto the plane perpendicular to d.
-            const kVec3 localX(1.0f, 0.0f, 0.0f);
-            kVec3 rx = localX - d * glm::dot(localX, d);
-            if (glm::length(rx) < 1e-5f)
-            {
-                // d is (anti-)parallel to local +X: fall back to local +Z.
-                const kVec3 localZ(0.0f, 0.0f, 1.0f);
-                rx = localZ - d * glm::dot(localZ, d);
-            }
-            if (glm::length(rx) < 1e-5f)
-                rx = kVec3(1.0f, 0.0f, 0.0f);
-
-            axisX = glm::normalize(rx);
-            axisY = glm::normalize(glm::cross(d, axisX));
-            // Re-orthogonalise so the frame is exactly orthonormal.
-            axisX = glm::normalize(glm::cross(axisY, d));
-        }
-
         /// Sutherland–Hodgman clip of a convex polygon against the half-space
         /// dot(n, p) <= d.  Positions and normals are linearly interpolated at
         /// the crossings.
@@ -211,18 +180,14 @@ namespace kemena
         const kMat4 W = getModelMatrixWorld();
         origin = kVec3(W[3]);
 
-        const float sizeX = (projSize.x > 1e-5f) ? projSize.x : 1.0f;
-        const float sizeY = (projSize.y > 1e-5f) ? projSize.y : 1.0f;
-
-        // Local-space basis; then transform it into world space.
-        kVec3 axisXLocal, axisYLocal;
-        buildProjectionBasis(projDirection, axisXLocal, axisYLocal);
-
-        kVec3 dirLocal = projDirection;
-        if (glm::length(dirLocal) < 1e-6f)
-            dirLocal = kVec3(0.0f, -1.0f, 0.0f);
-        else
-            dirLocal = glm::normalize(dirLocal);
+        // The projection volume is the object itself: the cross-section spans
+        // the object's local XZ footprint, the axis is the object's local -Y,
+        // and the volume reaches one object-height (world Y scale) downward.
+        // The object's rotation and scale therefore drive everything — there are
+        // no separate direction/distance/size settings.
+        const kVec3 axisXLocal(1.0f, 0.0f, 0.0f);
+        const kVec3 axisYLocal(0.0f, 0.0f, 1.0f);
+        const kVec3 dirLocal(0.0f, -1.0f, 0.0f);
 
         // The object's linear part applies rotation + scale; normalising the
         // transformed axes gives unit directions while their lengths recover the
@@ -241,13 +206,13 @@ namespace kemena
         axisYW = ayW / scaleY;
         dirWorld = dirWraw / scaleD;
 
-        halfW = sizeX * 0.5f * scaleX;
-        halfH = sizeY * 0.5f * scaleY;
-        worldWidth = halfW * 2.0f;
-        worldHeight = halfH * 2.0f;
-        // Avoid std::max here: on Windows a bare `max` macro (when NOMINMAX is
-        // not in effect for a translation unit) breaks the `std::max` token.
-        worldDistance = ((projDistance > 0.0f) ? projDistance : 0.0f) * scaleD;
+        // Cross-section = the object's world XZ footprint; depth = its world Y
+        // scale.
+        worldWidth = scaleX;
+        worldHeight = scaleY;
+        halfW = scaleX * 0.5f;
+        halfH = scaleY * 0.5f;
+        worldDistance = scaleD;
         return true;
     }
 
@@ -513,39 +478,6 @@ namespace kemena
         decalShaderType = type;
     }
 
-    kVec3 kDecal::getProjectionDirection() const
-    {
-        return projDirection;
-    }
-
-    void kDecal::setProjectionDirection(const kVec3 &direction)
-    {
-        projDirection = direction;
-        markGeometryDirty();
-    }
-
-    float kDecal::getProjectionDistance() const
-    {
-        return projDistance;
-    }
-
-    void kDecal::setProjectionDistance(float distance)
-    {
-        projDistance = (distance < 0.0f) ? 0.0f : distance;
-        markGeometryDirty();
-    }
-
-    kVec2 kDecal::getProjectionSize() const
-    {
-        return projSize;
-    }
-
-    void kDecal::setProjectionSize(const kVec2 &size)
-    {
-        projSize = size;
-        markGeometryDirty();
-    }
-
     uint32_t kDecal::getProjectionLayerMask() const
     {
         return projLayerMask;
@@ -579,9 +511,6 @@ namespace kemena
         data["type"] = "decal";
         data["decal_offset"] = surfaceOffset;
         data["decal_shader"] = decalShaderType;
-        data["decal_dir"] = { projDirection.x, projDirection.y, projDirection.z };
-        data["decal_distance"] = projDistance;
-        data["decal_size"] = { projSize.x, projSize.y };
         data["decal_layers"] = projLayerMask;
         return data;
     }

@@ -90,31 +90,6 @@ namespace kemena
     static void  objSetActive(kObject *o, bool a)               { o->setActive(a); }
     static kObject *objGetParent(kObject *o)                    { return o->getParent(); }
 
-    // Destroys a game object at runtime: detaches it (and its subtree) from the
-    // scene graph and releases its physics body, so it stops rendering, updating
-    // and colliding. The owning kObject memory is intentionally retained so any
-    // lingering script handle cannot dangle. Safe to call on a null handle.
-    static void  objDestroy(kObject *o)
-    {
-        if (o == nullptr)
-            return;
-
-        if (g_boundManager)
-        {
-            if (kPhysicsManager *pm = g_boundManager->getPhysicsManager())
-            {
-                if (kPhysicsObject *body = o->getPhysicsObject())
-                {
-                    o->detachPhysics();
-                    pm->destroyObject(body);
-                }
-            }
-        }
-
-        o->setActive(false);
-        o->detachFromParent();
-    }
-
     // -----------------------------------------------------------------------
     // Global functions
     // -----------------------------------------------------------------------
@@ -123,6 +98,28 @@ namespace kemena
     {
         return g_boundManager ? g_boundManager->getActiveObject() : nullptr;
     }
+
+    // Destroys a GameObject at runtime: releases its physics body (if any),
+    // hides it, and flags it so the script/scene-graph walks skip it (its
+    // scripts stop dispatching). The node stays parented so the editor can
+    // restore it when Play stops.
+    static void scriptDestroyObject(kObject *o)
+    {
+        if (o == nullptr)
+            return;
+
+        if (kPhysicsObject *body = o->getPhysicsObject())
+        {
+            if (g_boundManager != nullptr)
+                if (kPhysicsManager *pm = g_boundManager->getPhysicsManager())
+                    pm->destroyObject(body);
+            o->detachPhysics();
+        }
+
+        o->setActive(false);
+        o->setDestroyed(true);
+    }
+
     static float scriptDeltaTime()
     {
         return g_boundManager ? g_boundManager->getDeltaTime() : 0.0f;
@@ -510,7 +507,7 @@ namespace kemena
         r = e->RegisterObjectMethod("kObject", "void setActive(bool)",
                                     asFUNCTION(objSetActive), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "void destroy()",
-                                    asFUNCTION(objDestroy), asCALL_CDECL_OBJFIRST); assert(r >= 0);
+                                    asFUNCTION(scriptDestroyObject), asCALL_CDECL_OBJFIRST); assert(r >= 0);
         r = e->RegisterObjectMethod("kObject", "kObject@ getParent() const",
                                     asFUNCTION(objGetParent), asCALL_CDECL_OBJFIRST); assert(r >= 0);
 
@@ -698,6 +695,8 @@ namespace kemena
         // --- Global functions ------------------------------------------------
         r = e->RegisterGlobalFunction("kObject@ getSelf()",
                                       asFUNCTION(scriptGetSelf), asCALL_CDECL); assert(r >= 0);
+        r = e->RegisterGlobalFunction("void destroyObject(kObject@)",
+                                      asFUNCTION(scriptDestroyObject), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("float getDeltaTime()",
                                       asFUNCTION(scriptDeltaTime), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("float getFixedDeltaTime()",
@@ -708,9 +707,6 @@ namespace kemena
                                       asFUNCTION(scriptPrint), asCALL_CDECL); assert(r >= 0);
         r = e->RegisterGlobalFunction("void printConsole(const string &in)",
                                       asFUNCTION(scriptPrint), asCALL_CDECL); assert(r >= 0);
-        r = e->RegisterGlobalFunction("void destroyObject(kObject@)",
-                                      asFUNCTION(objDestroy), asCALL_CDECL); assert(r >= 0);
-
         // --- Named input ------------------------------------------------------
         r = e->RegisterGlobalFunction("bool getAction(const string &in)",
                                       asFUNCTION(scriptGetAction), asCALL_CDECL); assert(r >= 0);

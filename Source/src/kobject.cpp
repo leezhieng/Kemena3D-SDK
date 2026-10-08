@@ -845,6 +845,15 @@ namespace kemena
                 {"angular_damping", physicsDesc.angularDamping},
                 {"gravity_factor",  physicsDesc.gravityFactor},
                 {"layer",           physicsDesc.layer},
+                {"offset_position",
+                 {{"x", physicsDesc.offsetPosition.x},
+                  {"y", physicsDesc.offsetPosition.y},
+                  {"z", physicsDesc.offsetPosition.z}}},
+                {"offset_rotation",
+                 {{"x", physicsDesc.offsetRotation.x},
+                  {"y", physicsDesc.offsetRotation.y},
+                  {"z", physicsDesc.offsetRotation.z},
+                  {"w", physicsDesc.offsetRotation.w}}},
             };
             data["physics"] = phys;
         }
@@ -914,8 +923,13 @@ namespace kemena
     {
         if (!physicsObject || isStatic) return;
 
-        position = physicsObject->getPosition();
-        rotation = physicsObject->getRotation();
+        // The body transform is the object transform composed with the collider
+        // offset (body = object * offset), so invert the offset to recover the
+        // object transform from the simulated body transform.
+        kQuat bodyRot = physicsObject->getRotation();
+        kQuat offRot  = physicsObject->getOffsetRotation();
+        rotation = glm::normalize(bodyRot * glm::inverse(offRot));
+        position = physicsObject->getPosition() - rotation * physicsObject->getOffsetPosition();
     }
 
     // --- Character controller -------------------------------------------------

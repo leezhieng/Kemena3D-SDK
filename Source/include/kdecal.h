@@ -4,11 +4,11 @@
  *        the surfaces it intersects.
  *
  * Unlike the original implementation — a pre-made flat quad floating above a
- * surface — a decal is now a *projection volume*.  The node's transform defines
- * the projection: the pivot is the projector origin, the local projection
- * direction (default: straight down, -Y) is the axis, the projection distance
- * is how far the volume extends, and the projection size is the width/height of
- * the rectangular cross-section.
+ * surface — a decal is an *object-shaped projection volume*. The node's
+ * transform defines the projection entirely: the pivot is the projector origin,
+ * the object's rotation orients the volume, the local -Y axis is the projection
+ * direction, the object's world XZ footprint is the cross-section, and the
+ * volume extends one object-height (world Y scale) along -Y.
  *
  * During rendering `updateProjectedGeometry()` walks the scene meshes, clips
  * every triangle that intersects the projection box, and rebuilds a small mesh
@@ -17,15 +17,13 @@
  * albedo/alpha texture) is assigned to the decal is mapped onto the surface.
  *
  * Because the generated geometry is stored in world space the renderer draws
- * it with an identity model matrix; the projection parameters are the only
- * thing that changes when the node is moved or edited.
+ * it with an identity model matrix; moving, rotating or scaling the node is the
+ * only thing that reshapes the projection.
  *
  * Properties:
- *  - projection direction: unit-less local-space vector (normalised on use).
- *  - projection distance: how far along the direction the volume extends.
- *  - projection size: width (local X) and height (local Y) of the cross-section.
  *  - surface offset: pulls the generated fragments back toward the projector so
  *    they do not z-fight with the surface underneath.
+ *  - projection layer mask: which object layers the volume projects onto.
  *  - shader type ("flat", "pbr" or "phong"): built-in material applied to a
  *    freshly created decal. A separately assigned .mat asset (material UUID
  *    inherited from kObject) overrides this at render time.
@@ -144,42 +142,6 @@ namespace kemena
         void setShaderType(const kString &type);
 
         /**
-         * @brief Returns the local-space projection direction.
-         * @return Direction vector (not necessarily normalised).
-         */
-        kVec3 getProjectionDirection() const;
-
-        /**
-         * @brief Sets the local-space projection direction.
-         * @param direction Direction vector (default (0, -1, 0) = straight down).
-         */
-        void setProjectionDirection(const kVec3 &direction);
-
-        /**
-         * @brief Returns how far the projection extends along the direction.
-         * @return Projection distance in local units.
-         */
-        float getProjectionDistance() const;
-
-        /**
-         * @brief Sets how far the projection extends along the direction.
-         * @param distance Projection distance in local units (clamped to >= 0).
-         */
-        void setProjectionDistance(float distance);
-
-        /**
-         * @brief Returns the width/height of the projection cross-section.
-         * @return Cross-section size in local units (x = width, y = height).
-         */
-        kVec2 getProjectionSize() const;
-
-        /**
-         * @brief Sets the width/height of the projection cross-section.
-         * @param size Cross-section size in local units (x = width, y = height).
-         */
-        void setProjectionSize(const kVec2 &size);
-
-        /**
          * @brief Returns the layer mask this decal projects onto.
          *
          * Only scene meshes whose layer mask intersects this value are
@@ -212,7 +174,8 @@ namespace kemena
          *
          * Delegates to kObject::serialize() (transform, children, material UUID,
          * components), stamps the node type as "decal", and stores the shader
-         * type and projection parameters. The generated geometry is not stored.
+         * type and layer mask. The projection volume is derived from the node's
+         * transform, so it needs no parameters of its own.
          * @return JSON object describing the decal.
          */
         json serialize() override;
@@ -220,7 +183,7 @@ namespace kemena
     private:
         /**
          * @brief Computes the world-space projection frame from the node's
-         *        transform and projection parameters.
+         *        rotation and scale (the projection volume is the object box).
          * @return false if the transform is degenerate (zero scale).
          */
         bool computeProjectionFrame(kVec3 &origin, kVec3 &axisXW, kVec3 &axisYW,
@@ -250,9 +213,9 @@ namespace kemena
         std::vector<uint32_t> indices;
 
         // --- Projection parameters -------------------------------------------
-        kVec3 projDirection = kVec3(0.0f, -1.0f, 0.0f); ///< Local projection axis.
-        float projDistance  = 2.0f;                    ///< Extent along the axis.
-        kVec2 projSize      = kVec2(1.0f, 1.0f);       ///< Cross-section width/height.
+        // The projection volume is derived entirely from this node's transform
+        // (see computeProjectionFrame), so only the layer mask and the
+        // surface-offset nudge remain as explicit settings.
         uint32_t projLayerMask = 0xFFFFFFFFu;          ///< Layers this decal projects onto (all by default).
         float surfaceOffset = 0.01f;                   ///< Pull-back toward the projector.
         kString decalShaderType = "flat";              ///< Built-in shader choice.

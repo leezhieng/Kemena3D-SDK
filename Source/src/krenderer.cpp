@@ -1443,9 +1443,10 @@ void main()
 
             // Editor gizmo icon: a billboard at the pivot drawn with a
             // dedicated icon material (the projection material carries the
-            // decal artwork, so it cannot double as the icon).
-            kMaterial *iconMat = decal->getIconMaterial();
-            if (editorGizmosEnabled && iconMat != nullptr)
+            // decal artwork, so it cannot double as the icon). Editor-only —
+            // skipped in the Game view and at runtime.
+            if (kMaterial *iconMat = decal->getIconMaterial();
+                iconMat != nullptr && editorGizmosEnabled)
             {
                 if (world->getMainCamera() != nullptr && iconMat->getShader() != nullptr)
                 {
@@ -1489,7 +1490,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_LIGHT)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_LIGHT)
         {
             kLight *currentLight = (kLight *)currentNode;
 
@@ -1537,7 +1538,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_CAMERA)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_CAMERA)
         {
             kCamera *currentCamera = (kCamera *)currentNode;
 
@@ -1591,7 +1592,7 @@ void main()
                 }
             }
         }
-        else if (currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
+        else if (editorGizmosEnabled && currentNode->getType() == kNodeType::NODE_TYPE_AUDIO)
         {
             kObject *audioObj = currentNode;
 
@@ -3118,11 +3119,12 @@ void main() { outColor = vec4(lineColor, 1.0); }
             {
                 node->calculateModelMatrix();
                 const kPhysicsObjectDesc &pd = node->getPhysicsDesc();
-                kQuat rot = node->getGlobalRotation();
-                // The collider is spawned offset from the object origin (see
-                // Manager::startPhysicsSimulation), so the debug wireframe must
-                // include that offset or it never appears to move.
-                kVec3 pos = node->getGlobalPosition() + rot * pd.shape.offset;
+                // Fold the collider offset into the frame so the wireframe
+                // matches where Jolt places the shape (the offset is baked into
+                // the body-local shape, not applied by the body transform).
+                kQuat nodeRot = node->getGlobalRotation();
+                kVec3 pos = node->getGlobalPosition() + nodeRot * pd.offsetPosition;
+                kQuat rot = nodeRot * pd.offsetRotation;
                 std::vector<float> verts;
 
                 // Local-axis vectors rotated into world space — colliders are
@@ -3226,7 +3228,7 @@ void main() { outColor = vec4(lineColor, 1.0); }
                         kVec3 ext = box.max - box.min;
                         if (ext.x > 1e-4f || ext.y > 1e-4f || ext.z > 1e-4f)
                         {
-                            kVec3 c = (box.min + box.max) * 0.5f;
+                            kVec3 c = (box.min + box.max) * 0.5f + nodeRot * pd.offsetPosition;
                             kVec3 e = ext * 0.5f;
                             e.x *= pd.shape.customScale.x;
                             e.y *= pd.shape.customScale.y;

@@ -108,7 +108,7 @@ namespace kemena
             case kScriptNodeType::GetAnimatorFloat:   return "Get Float";
             case kScriptNodeType::GetAnimatorInt:     return "Get Integer";
             case kScriptNodeType::Lerp:               return "Lerp";
-            case kScriptNodeType::Destroy:            return "Destroy";
+            case kScriptNodeType::DestroyObject:      return "Destroy GameObject";
             default:                                return "Node";
         }
     }
@@ -316,9 +316,7 @@ namespace kemena
                 out("", kScriptPinType::Exec);
                 break;
 
-            case kScriptNodeType::Destroy:
-                // Removes the target game object from the scene at runtime.
-                // The Target input defaults to the script's own object (getSelf()).
+            case kScriptNodeType::DestroyObject:
                 in("", kScriptPinType::Exec);
                 in("Target", kScriptPinType::Object);
                 out("", kScriptPinType::Exec);
@@ -1410,7 +1408,7 @@ namespace kemena
                     case kScriptNodeType::SetActive:
                         return emitNamedInput(n, "Target") + ".setActive(" +
                                emitNamedInput(n, "Active") + ");";
-                    case kScriptNodeType::Destroy:
+                    case kScriptNodeType::DestroyObject:
                         return "destroyObject(" + emitNamedInput(n, "Target") + ");";
                     case kScriptNodeType::SetVariable:
                     {
