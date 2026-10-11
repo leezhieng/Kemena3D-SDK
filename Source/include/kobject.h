@@ -615,6 +615,45 @@ namespace kemena
          */
         void drawIcon();
 
+        // --- Editor gizmo ----------------------------------------------------
+
+        /**
+         * @brief Returns the configured editor gizmo shape.
+         *
+         * Defaults to kGizmoShape::GIZMO_SHAPE_NONE (no gizmo). The gizmo is an
+         * authoring aid rendered only in the editor viewports.
+         */
+        kGizmoShape getGizmoShape() const { return gizmoShape; }
+
+        /** @brief Sets the editor gizmo shape. */
+        void setGizmoShape(kGizmoShape shape) { gizmoShape = shape; }
+
+        /** @brief True when this object draws an editor gizmo. */
+        bool hasGizmo() const { return gizmoShape != kGizmoShape::GIZMO_SHAPE_NONE; }
+
+        /** @brief Gizmo offset position, relative to the object's local space. */
+        kVec3 getGizmoOffsetPosition() const { return gizmoOffsetPosition; }
+        /** @brief Sets the gizmo offset position. */
+        void setGizmoOffsetPosition(const kVec3 &p) { gizmoOffsetPosition = p; }
+
+        /** @brief Gizmo offset rotation (applied after the offset position). */
+        kQuat getGizmoOffsetRotation() const { return gizmoOffsetRotation; }
+        /** @brief Sets the gizmo offset rotation. */
+        void setGizmoOffsetRotation(const kQuat &r) { gizmoOffsetRotation = r; }
+
+        /** @brief Gizmo offset scale (applied last). */
+        kVec3 getGizmoOffsetScale() const { return gizmoOffsetScale; }
+        /** @brief Sets the gizmo offset scale. */
+        void setGizmoOffsetScale(const kVec3 &s) { gizmoOffsetScale = s; }
+
+        /**
+         * @brief Returns the world-space matrix of the gizmo.
+         *
+         * = objectWorld * T(offsetPosition) * R(offsetRotation) * S(offsetScale),
+         * so the gizmo transform is fully independent of the object's pivot.
+         */
+        kMat4 getGizmoMatrixWorld();
+
         /**
          * @brief Serialises the object to a JSON value.
          * @return JSON object containing all serialisable fields.
@@ -712,6 +751,12 @@ namespace kemena
         kString          materialUuid;  ///< Source .mat asset UUID (for save/load).
         kString          animatorRef;   ///< Source .animator asset UUID (for save/load).
         bool             importChild   = false; ///< true → import-derived sub-mesh, excluded from serialization.
+
+        // Editor gizmo (authoring aid, serialized with the object).
+        kGizmoShape gizmoShape = kGizmoShape::GIZMO_SHAPE_NONE; ///< Shape drawn for this object (NONE = none).
+        kVec3       gizmoOffsetPosition = kVec3(0.0f);          ///< Gizmo offset position (local).
+        kQuat       gizmoOffsetRotation = kQuat(kVec3(0.0f));   ///< Gizmo offset rotation (local).
+        kVec3       gizmoOffsetScale    = kVec3(1.0f);          ///< Gizmo offset scale (local).
         kPhysicsObject  *physicsObject = nullptr;
 
         uint32_t iconVAO = 0;          ///< VAO for the billboard icon quad (lazy-init).

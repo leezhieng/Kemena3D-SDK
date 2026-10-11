@@ -1644,7 +1644,20 @@ void main()
         {
             kObject *currentObject = currentNode;
 
-            if (currentObject->getMaterial() != nullptr)
+            // Editor gizmo (authoring aid). An IMAGE gizmo is drawn as a
+            // billboard from the object's icon material and replaces the normal
+            // material draw (the icon material carries the gizmo texture).
+            // Shape gizmos are wireframe overlays drawn in addition to any
+            // real material.
+            bool gizmoIsImage = false;
+            if (editorGizmosEnabled && currentObject->hasGizmo() &&
+                world->getMainCamera() != nullptr)
+            {
+                renderObjectGizmo(world, currentObject);
+                gizmoIsImage = (currentObject->getGizmoShape() == kGizmoShape::GIZMO_SHAPE_IMAGE);
+            }
+
+            if (!gizmoIsImage && currentObject->getMaterial() != nullptr)
             {
                 if (currentObject->getMaterial()->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
                 {
@@ -2392,7 +2405,8 @@ void main()
                   currentNode->getType() == kNodeType::NODE_TYPE_CAMERA ||
                   currentNode->getType() == kNodeType::NODE_TYPE_OBJECT ||
                   currentNode->getType() == kNodeType::NODE_TYPE_AUDIO) &&
-                 currentNode->getMaterial() != nullptr &&
+                 (currentNode->getMaterial() != nullptr ||
+                  (currentNode->getType() == kNodeType::NODE_TYPE_OBJECT && currentNode->hasGizmo())) &&
                  world->getMainCamera() != nullptr)
         {
             // Render icon billboard for non-mesh scene objects
@@ -2402,11 +2416,20 @@ void main()
             kMat4 view = world->getMainCamera()->getViewMatrix();
             kMat4 proj = world->getMainCamera()->getProjectionMatrix();
 
+            // Objects with an editor gizmo are picked at the gizmo's offset
+            // position so the click proxy lines up with the visible gizmo.
+            kVec3 pickPos = currentNode->getGlobalPosition();
+            if (currentNode->getType() == kNodeType::NODE_TYPE_OBJECT && currentNode->hasGizmo())
+            {
+                kMat4 gm = currentNode->getGizmoMatrixWorld();
+                pickPos = kVec3(gm[3][0], gm[3][1], gm[3][2]);
+            }
+
             kVec3 idColor = idToRgb(currentNode->getId());
             pickingIconShader->setValue("viewProjection", proj * view);
             pickingIconShader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
             pickingIconShader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
-            pickingIconShader->setValue("billboardPosition", currentNode->getGlobalPosition());
+            pickingIconShader->setValue("billboardPosition", pickPos);
             // Follow the icon size (never below the legacy 0.8 so small icons
             // stay comfortably clickable).
             pickingIconShader->setValue("billboardSize",
@@ -3517,6 +3540,277 @@ void main() { outColor = vec4(lineColor, 1.0); }
         driver->bindDrawFramebuffer(fbo);
         driver->blitFramebufferColor(0, 0, fboWidth, fboHeight, 0, 0, fboWidth, fboHeight);
         driver->unbindFramebuffer();
+    }
+
+    void kRenderer::renderObjectGizmo(kWorld *world, kObject *object)
+    {
+        if (object == nullptr || world == nullptr || world->getMainCamera() == nullptr)
+            return;
+
+        const kGizmoShape shape = object->getGizmoShape();
+        if (shape == kGizmoShape::GIZMO_SHAPE_NONE)
+            return;
+
+        const kMat4 gm = object->getGizmoMatrixWorld();
+
+        // Image gizmo: billboard using the object's icon material.
+        if (shape == kGizmoShape::GIZMO_SHAPE_IMAGE)
+        {
+            kMaterial *mat = object->getMaterial();
+            if (mat == nullptr || mat->getShader() == nullptr)
+                return;
+
+            kMat4 view = world->getMainCamera()->getViewMatrix();
+            kMat4 proj = world->getMainCamera()->getProjectionMatrix();
+
+            if (mat->getTransparent() == kTransparentType::TRANSP_TYPE_BLEND)
+            {
+                driver->setBlend(true);
+                driver->setBlendFunc(kBlendFactor::SRC_ALPHA, kBlendFactor::ONE_MINUS_SRC_ALPHA);
+            }
+            else
+            {
+                driver->setBlend(false);
+            }
+            driver->setCullFace(false);
+
+            kShader *shader = mat->getShader();
+            shader->use();
+
+            // Billboard position comes from the gizmo's offset matrix.
+            kVec3 pos = kVec3(gm[3][0], gm[3][1], gm[3][2]);
+            kVec3 sc = object->getGizmoOffsetScale();
+            float sizeScale = (sc.x + sc.y + sc.z) / 3.0f;
+            if (sizeScale <= 0.0001f)
+                sizeScale = 1.0f;
+
+            shader->setValue("viewProjection", proj * view);
+            shader->setValue("cameraRightWorldSpace", kVec3(view[0][0], view[1][0], view[2][0]));
+            shader->setValue("cameraUpWorldSpace", kVec3(view[0][1], view[1][1], view[2][1]));
+            shader->setValue("billboardPosition", pos);
+            shader->setValue("billboardSize", kVec2(iconGizmoSize * sizeScale,
+                                                    iconGizmoSize * sizeScale));
+            shader->setValue("color", kVec3(1.0f, 1.0f, 1.0f));
+
+            for (size_t l = 0; l < mat->getTextures().size(); ++l)
+            {
+                kTexture *tex = mat->getTexture((int)l);
+                if (tex != nullptr && tex->getType() == kTextureType::TEX_TYPE_2D)
+                {
+                    driver->bindTexture2D((int)l, tex->getTextureID());
+                    driver->setUniformInt(shader->getShaderProgram(), "albedoMap", (int)l);
+                }
+            }
+
+            object->drawIcon();
+
+            driver->unbindTexture2D(0);
+            shader->unuse();
+            driver->setCullFace(true);
+            return;
+        }
+
+        // Shape gizmos: wireframe overlay.
+        drawGizmoWireframe(world, gm, shape, kVec3(1.0f, 0.75f, 0.2f));
+    }
+
+    void kRenderer::drawGizmoWireframe(kWorld *world, const kMat4 &model,
+                                       kGizmoShape shape, kVec3 color)
+    {
+        if (world == nullptr || world->getMainCamera() == nullptr)
+            return;
+
+        const float pi = 3.14159265358979f;
+        std::vector<kVec3> local;
+        auto line = [&local](const kVec3 &a, const kVec3 &b)
+        {
+            local.push_back(a);
+            local.push_back(b);
+        };
+
+        switch (shape)
+        {
+        case kGizmoShape::GIZMO_SHAPE_CUBE:
+        {
+            const float h = 0.5f;
+            kVec3 v[8] = {
+                {-h, -h, -h}, {h, -h, -h}, {h, h, -h}, {-h, h, -h},
+                {-h, -h, h}, {h, -h, h}, {h, h, h}, {-h, h, h}};
+            const int e[12][2] = {
+                {0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+            for (auto &ed : e)
+                line(v[ed[0]], v[ed[1]]);
+            break;
+        }
+        case kGizmoShape::GIZMO_SHAPE_SPHERE:
+        {
+            const float r = 0.5f;
+            const int seg = 24;
+            for (int i = 0; i < seg; ++i)
+            {
+                float t0 = (float)i / seg * 2.0f * pi;
+                float t1 = (float)(i + 1) / seg * 2.0f * pi;
+                line(kVec3(r * cosf(t0), r * sinf(t0), 0.0f),
+                     kVec3(r * cosf(t1), r * sinf(t1), 0.0f));
+                line(kVec3(r * cosf(t0), 0.0f, r * sinf(t0)),
+                     kVec3(r * cosf(t1), 0.0f, r * sinf(t1)));
+                line(kVec3(0.0f, r * cosf(t0), r * sinf(t0)),
+                     kVec3(0.0f, r * cosf(t1), r * sinf(t1)));
+            }
+            break;
+        }
+        case kGizmoShape::GIZMO_SHAPE_DIAMOND:
+        {
+            kVec3 top(0.0f, 0.5f, 0.0f);
+            kVec3 bot(0.0f, -0.5f, 0.0f);
+            kVec3 mid[4] = {{0.5f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.5f},
+                            {-0.5f, 0.0f, 0.0f}, {0.0f, 0.0f, -0.5f}};
+            for (int i = 0; i < 4; ++i)
+            {
+                line(top, mid[i]);
+                line(bot, mid[i]);
+                line(mid[i], mid[(i + 1) % 4]);
+            }
+            break;
+        }
+        case kGizmoShape::GIZMO_SHAPE_TRIANGLE:
+        {
+            // Pyramid: square base at y = -0.5, apex at y = +0.5.
+            const float h = 0.5f;
+            kVec3 base[4] = {{-h, -h, -h}, {h, -h, -h}, {h, -h, h}, {-h, -h, h}};
+            kVec3 apex(0.0f, h, 0.0f);
+            for (int i = 0; i < 4; ++i)
+            {
+                line(base[i], base[(i + 1) % 4]);
+                line(base[i], apex);
+            }
+            break;
+        }
+        case kGizmoShape::GIZMO_SHAPE_CYLINDER:
+        {
+            const float r = 0.5f;
+            const float h = 0.5f;
+            const int seg = 20;
+            for (int i = 0; i < seg; ++i)
+            {
+                float t0 = (float)i / seg * 2.0f * pi;
+                float t1 = (float)(i + 1) / seg * 2.0f * pi;
+                line(kVec3(r * cosf(t0), h, r * sinf(t0)),
+                     kVec3(r * cosf(t1), h, r * sinf(t1)));
+                line(kVec3(r * cosf(t0), -h, r * sinf(t0)),
+                     kVec3(r * cosf(t1), -h, r * sinf(t1)));
+            }
+            for (int i = 0; i < 4; ++i)
+            {
+                float t = (float)i / 4.0f * 2.0f * pi;
+                line(kVec3(r * cosf(t), h, r * sinf(t)),
+                     kVec3(r * cosf(t), -h, r * sinf(t)));
+            }
+            break;
+        }
+        case kGizmoShape::GIZMO_SHAPE_CAPSULE:
+        {
+            const float r = 0.3f;
+            const float cy = 0.2f;
+            const int seg = 20;
+            // Cylinder wall lines.
+            for (int i = 0; i < 8; ++i)
+            {
+                float t = (float)i / 8.0f * 2.0f * pi;
+                line(kVec3(r * cosf(t), cy, r * sinf(t)),
+                     kVec3(r * cosf(t), -cy, r * sinf(t)));
+            }
+            // Cap rings.
+            for (int i = 0; i < seg; ++i)
+            {
+                float t0 = (float)i / seg * 2.0f * pi;
+                float t1 = (float)(i + 1) / seg * 2.0f * pi;
+                line(kVec3(r * cosf(t0), cy, r * sinf(t0)),
+                     kVec3(r * cosf(t1), cy, r * sinf(t1)));
+                line(kVec3(r * cosf(t0), -cy, r * sinf(t0)),
+                     kVec3(r * cosf(t1), -cy, r * sinf(t1)));
+            }
+            // Rounded caps (two orthogonal arcs per cap).
+            for (int i = 0; i < seg / 2; ++i)
+            {
+                float a0 = (float)i / (seg / 2) * pi;
+                float a1 = (float)(i + 1) / (seg / 2) * pi;
+                line(kVec3(r * cosf(a0), cy + r * sinf(a0), 0.0f),
+                     kVec3(r * cosf(a1), cy + r * sinf(a1), 0.0f));
+                line(kVec3(0.0f, cy + r * sinf(a0), r * cosf(a0)),
+                     kVec3(0.0f, cy + r * sinf(a1), r * cosf(a1)));
+                line(kVec3(r * cosf(a0), -cy - r * sinf(a0), 0.0f),
+                     kVec3(r * cosf(a1), -cy - r * sinf(a1), 0.0f));
+                line(kVec3(0.0f, -cy - r * sinf(a0), r * cosf(a0)),
+                     kVec3(0.0f, -cy - r * sinf(a1), r * cosf(a1)));
+            }
+            break;
+        }
+        default:
+            break;
+        }
+
+        if (local.empty())
+            return;
+
+        // Transform the local unit shape into world space.
+        std::vector<kVec3> worldSegs;
+        worldSegs.reserve(local.size());
+        for (const kVec3 &p : local)
+        {
+            kVec4 w = model * kVec4(p, 1.0f);
+            worldSegs.push_back(kVec3(w.x, w.y, w.z));
+        }
+
+        // Lazy-compile the shared debug-line shader / buffers.
+        if (!debugLineShader)
+        {
+            debugLineShader = new kShader();
+            debugLineShader->loadShadersCode(kDebugLineVS, kDebugLineFS);
+        }
+        if (!debugLineVao)
+        {
+            debugLineVao = driver->createVertexArray();
+            debugLineVbo = driver->createBuffer();
+            glBindVertexArray(static_cast<GLuint>(debugLineVao));
+            glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
+            glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+            glEnableVertexAttribArray(0);
+            glBindVertexArray(0);
+        }
+
+        std::vector<float> verts;
+        verts.reserve(worldSegs.size() * 3);
+        for (const kVec3 &p : worldSegs)
+        {
+            verts.push_back(p.x);
+            verts.push_back(p.y);
+            verts.push_back(p.z);
+        }
+
+        debugLineShader->use();
+        debugLineShader->setValue("viewMatrix", world->getMainCamera()->getViewMatrix());
+        debugLineShader->setValue("projectionMatrix", world->getMainCamera()->getProjectionMatrix());
+        debugLineShader->setValue("lineColor", color);
+
+        // Draw the gizmo on top of the scene, then restore state for the
+        // objects rendered afterwards.
+        driver->setDepthTest(false);
+        driver->setDepthWrite(false);
+        driver->setBlend(false);
+
+        glBindBuffer(GL_ARRAY_BUFFER, static_cast<GLuint>(debugLineVbo));
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
+                     verts.data(), GL_DYNAMIC_DRAW);
+        driver->drawArrays(debugLineVao, kPrimitiveType::LINES,
+                           static_cast<int>(verts.size() / 3));
+
+        driver->setDepthTest(true);
+        driver->setDepthWrite(true);
+        debugLineShader->unuse();
     }
 
     void kRenderer::renderParticles(kWorld *world)

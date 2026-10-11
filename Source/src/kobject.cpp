@@ -579,6 +579,17 @@ namespace kemena
         return localTransform;
     }
 
+    kMat4 kObject::getGizmoMatrixWorld()
+    {
+        // Gizmo offset transform is applied in the object's local space:
+        //   world = objectWorld * T(offsetPos) * R(offsetRot) * S(offsetScale)
+        // so the gizmo can be placed independently of the object's own pivot.
+        kMat4 offset = glm::translate(kMat4(1.0f), gizmoOffsetPosition);
+        offset *= glm::toMat4(glm::normalize(gizmoOffsetRotation));
+        offset *= glm::scale(kMat4(1.0f), gizmoOffsetScale);
+        return getModelMatrixWorld() * offset;
+    }
+
     void kObject::draw()
     {
         if (material == nullptr) return;
@@ -810,6 +821,29 @@ namespace kemena
 
         // Assigned animator asset — only emit when set.
         if (!animatorRef.empty())  data["animator_ref"] = animatorRef;
+
+        // Editor gizmo — only emitted when a shape is configured. The gizmo
+        // has its own offset transform, independent of the object's own.
+        if (gizmoShape != kGizmoShape::GIZMO_SHAPE_NONE)
+        {
+            kVec3 gizEuler = glm::degrees(glm::eulerAngles(gizmoOffsetRotation));
+            data["gizmo"] =
+                {
+                    {"shape", (int)gizmoShape},
+                    {"position",
+                     {{"x", gizmoOffsetPosition.x},
+                      {"y", gizmoOffsetPosition.y},
+                      {"z", gizmoOffsetPosition.z}}},
+                    {"rotation",
+                     {{"x", gizEuler.x},
+                      {"y", gizEuler.y},
+                      {"z", gizEuler.z}}},
+                    {"scale",
+                     {{"x", gizmoOffsetScale.x},
+                      {"y", gizmoOffsetScale.y},
+                      {"z", gizmoOffsetScale.z}}},
+                };
+        }
 
         // Per-sub-mesh overrides for import-derived sub-meshes (which are not
         // serialized as children): material plus any changed flag (active,

@@ -96,6 +96,27 @@ namespace kemena
     };
 
     /**
+     * @brief Editor gizmo shape drawn for an object.
+     *
+     * The gizmo is an authoring aid only: it is drawn in the editor viewports
+     * (when editor gizmos are enabled) and never in the Game view or at
+     * runtime. It carries its own offset transform (position / rotation /
+     * scale) relative to the owning object, so it can be placed independently
+     * of the object's own pivot.
+     */
+    enum kGizmoShape
+    {
+        GIZMO_SHAPE_NONE = 0, ///< No gizmo (default).
+        GIZMO_SHAPE_IMAGE,    ///< Billboard image icon (uses the object's icon material).
+        GIZMO_SHAPE_SPHERE,   ///< Wireframe sphere.
+        GIZMO_SHAPE_CUBE,     ///< Wireframe cube.
+        GIZMO_SHAPE_DIAMOND,  ///< Wireframe octahedron (diamond).
+        GIZMO_SHAPE_TRIANGLE, ///< Wireframe pyramid / triangle marker.
+        GIZMO_SHAPE_CAPSULE,  ///< Wireframe capsule.
+        GIZMO_SHAPE_CYLINDER  ///< Wireframe cylinder.
+    };
+
+    /**
      * @brief Camera behaviour mode.
      */
     enum kCameraType

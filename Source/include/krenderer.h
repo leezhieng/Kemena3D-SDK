@@ -602,6 +602,28 @@ namespace kemena
          */
         void renderSceneGraphPicking(kWorld *world, kScene *scene, kObject *rootNode);
 
+        /**
+         * @brief Draws the editor gizmo configured on @p object, if any.
+         *
+         * IMAGE gizmos are drawn as a billboard using the object's icon
+         * material; shape gizmos are drawn as a wireframe using the shared
+         * debug-line shader. The gizmo is placed at its offset transform
+         * (independent of the object's pivot). Editor-only.
+         *
+         * @param world  World containing the active camera.
+         * @param object Object whose gizmo should be drawn.
+         */
+        void renderObjectGizmo(kWorld *world, kObject *object);
+
+        /**
+         * @brief Draws a unit wireframe gizmo shape transformed by @p model.
+         * @param world World containing the active camera.
+         * @param model World-space matrix positioning/scaling the shape.
+         * @param shape Gizmo shape to draw.
+         * @param color Line colour.
+         */
+        void drawGizmoWireframe(kWorld *world, const kMat4 &model, kGizmoShape shape, kVec3 color);
+
         // Screen FBO
         bool enableScreenBuffer = false; ///< True when off-screen post-process FBO is active.
         bool skipScreenQuad = false;     ///< When true, skip the fullscreen-quad blit (FBO still populated).
