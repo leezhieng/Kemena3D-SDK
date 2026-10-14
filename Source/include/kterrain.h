@@ -52,6 +52,14 @@ namespace kemena
         float slopeMin = 0.0f;         ///< Minimum slope angle in degrees for this layer.
         float slopeMax = 90.0f;        ///< Maximum slope angle in degrees for this layer.
 
+        // Optional per-layer textures. These are packed into the terrain's
+        // sampler2DArray objects (albedo / normal / ORM / mask) keyed by layer
+        // index, mirroring Cartographer's texture-array terrain material.
+        kString albedoPath;            ///< Albedo image (sRGB) -> u_AlbedoArray[layer].
+        kString normalPath;            ///< Normal-map image -> u_NormalArray[layer].
+        kString ormPath;               ///< ORM image (R=AO, G=Roughness, B=Metallic) -> u_ORMArray.
+        kString maskPath;              ///< Masked-blend mask image -> u_MaskArray[layer].
+
         void serialize(json &j) const;
         void deserialize(const json &j);
     };
@@ -203,19 +211,42 @@ namespace kemena
          */
         void fillHeight(float value);
 
-        // --- Splat map (material blending) ---------------------------------------
+        // --- Weight map (material blending, up to 16 layers) ---------------------
+
+        /** @brief Maximum number of material layers a terrain tile supports. */
+        static constexpr int kMaxTerrainLayers = 16;
 
         /**
-         * @brief Returns a pointer to the splat data (RGBA8, heightRes*heightRes*4).
+         * @brief Returns a pointer to the raw weight data.
          *
-         * Each pixel stores blend weights for up to 4 material layers.
-         * The values are normalised (sum to 1.0 per pixel).
+         * Layout: heightRes * heightRes * 16 bytes, packed per sample as
+         * kMaxTerrainLayers consecutive layer weights (sample index = z*res+x).
+         * Layers are uploaded as four RGBA weight-map textures: layers 0..3 ->
+         * u_WeightMap0, 4..7 -> u_WeightMap1, 8..11 -> u_WeightMap2,
+         * 12..15 -> u_WeightMap3.
          */
-        const unsigned char *getSplatData() const { return m_splatData.data(); }
-        unsigned char *getSplatData() { return m_splatData.data(); }
+        const unsigned char *getWeightData() const { return m_weightData.data(); }
+        unsigned char *getWeightData() { return m_weightData.data(); }
 
-        /** @brief Returns the splat data size in bytes. */
-        size_t getSplatDataSize() const { return m_splatData.size(); }
+        /** @brief Returns the weight data size in bytes. */
+        size_t getWeightDataSize() const { return m_weightData.size(); }
+
+        /** @brief Backward-compatible accessor returning the weight data (layers 0..3 are the legacy RGBA splat). */
+        const unsigned char *getSplatData() const { return m_weightData.data(); }
+        unsigned char *getSplatData() { return m_weightData.data(); }
+        size_t getSplatDataSize() const { return m_weightData.size(); }
+
+        /** @brief Per-sample weight (0..255) of a layer at heightmap (x, z). */
+        unsigned char getWeight(int x, int z, int layer) const;
+
+        /** @brief Sets the per-sample weight (0..255) of a layer at heightmap (x, z). */
+        void setWeight(int x, int z, int layer, unsigned char v);
+
+        /** @brief GPU weight-map texture handle (w in 0..3), or 0 if not created. */
+        uint32_t getWeightTexture(int w) const { return (w >= 0 && w < 4) ? m_weightTextures[w] : 0; }
+
+        /** @brief Rebuilds the layer texture arrays from the current layer image paths. */
+        void rebuildLayerArrays();
 
         /**
          * @brief Loads a splat map from a PNG file (RGBA8).
@@ -288,6 +319,18 @@ namespace kemena
          */
         void updateSplatTexture();
 
+        // --- Distance LOD --------------------------------------------------------
+
+        /**
+         * @brief Sets the mesh decimation step (1 = full resolution). Powers of two
+         *        that divide (heightRes-1) keep the grid tile-aligned. Rebuilds the
+         *        mesh immediately when the step changes and the tile is loaded.
+         */
+        void setLodStep(int step);
+
+        /** @brief Returns the current mesh decimation step (1 = full resolution). */
+        int getLodStep() const { return m_lodStep; }
+
         // --- Neighbor stitching --------------------------------------------------
 
         /**
@@ -347,8 +390,14 @@ namespace kemena
         /** @brief Computes the normal at a heightmap sample using central differences. */
         kVec3 computeNormal(int x, int z) const;
 
-        /** @brief Creates the GPU splat texture (RGBA8) and uploads splat data. */
+        /** @brief Creates the four GPU weight-map textures (RGBA8) from the 16 layers. */
         void createSplatTexture();
+
+        /** @brief Builds the per-layer albedo / normal / ORM / mask texture arrays. */
+        void createLayerArrays();
+
+        /** @brief Pixels per side of each layer texture array. */
+        static constexpr int kTerrainArraySize = 256;
 
         kScene *m_scene = nullptr;
         kAssetManager *m_assetManager = nullptr;
@@ -361,11 +410,15 @@ namespace kemena
         int m_heightRes = 513;
         float m_sampleSpacing = 0.0f; ///< World-space distance between height samples.
 
-        std::vector<float> m_heightData;        ///< heightRes * heightRes floats.
-        std::vector<unsigned char> m_splatData; ///< heightRes * heightRes * 4 bytes (RGBA).
-        std::vector<kTerrainLayer> m_layers;    ///< Up to 4 material layers.
+        std::vector<float> m_heightData;         ///< heightRes * heightRes floats.
+        std::vector<unsigned char> m_weightData; ///< heightRes * heightRes * 16 bytes (16 layer weights).
+        std::vector<kTerrainLayer> m_layers;     ///< Up to kMaxTerrainLayers material layers.
 
-        uint32_t m_splatTexture = 0; ///< GPU RGBA8 splat texture
+        uint32_t m_weightTextures[4] = {0, 0, 0, 0}; ///< GPU RGBA8 weight-map textures (4 x 4 layers).
+        uint32_t m_albedoArray = 0; ///< GL_TEXTURE_2D_ARRAY of per-layer albedo (sRGB).
+        uint32_t m_normalArray = 0; ///< GL_TEXTURE_2D_ARRAY of per-layer normals.
+        uint32_t m_ormArray    = 0; ///< GL_TEXTURE_2D_ARRAY of per-layer ORM (R=AO, G=Rough, B=Metal).
+        uint32_t m_maskArray   = 0; ///< GL_TEXTURE_2D_ARRAY of per-layer blend masks.
 
         // Neighbors for stitching (N, S, E, W)
         kTerrain *m_neighborNorth = nullptr;
@@ -374,6 +427,7 @@ namespace kemena
         kTerrain *m_neighborWest = nullptr;
 
         bool m_loaded = false;
+        int  m_lodStep = 1; ///< Mesh decimation step for distance LOD (1 = full res).
     };
 
     // ---------------------------------------------------------------------------

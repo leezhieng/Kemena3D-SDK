@@ -181,8 +181,9 @@ namespace kemena
      */
     enum kTextureType
     {
-        TEX_TYPE_2D,  ///< Standard 2-dimensional texture.
-        TEX_TYPE_CUBE ///< Cube-map texture (six faces).
+        TEX_TYPE_2D,       ///< Standard 2-dimensional texture.
+        TEX_TYPE_CUBE,     ///< Cube-map texture (six faces).
+        TEX_TYPE_2D_ARRAY  ///< Layered 2D texture (sampler2DArray); terrain layer arrays.
     };
 
     /**

@@ -15,6 +15,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/PlaneShape.h>
+#include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/ScaledShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
@@ -134,6 +135,33 @@ namespace kemena
                 if (res.HasError())
                 {
                     std::cout << "[kPhysicsObject] Mesh build failed: "
+                              << res.GetError().c_str() << std::endl;
+                    return false;
+                }
+                shape = res.Get();
+                break;
+            }
+
+            case kPhysicsShapeType::HeightField:
+            {
+                // Dedicated Jolt height field — much cheaper than a triangle mesh
+                // for regular terrain grids, and the recommended terrain collider.
+                if (sd.heightSamples.empty() || sd.heightSampleCount < 2)
+                {
+                    std::cout << "[kPhysicsObject] HeightField shape needs height samples." << std::endl;
+                    return false;
+                }
+
+                JPH::HeightFieldShapeSettings hs(
+                    sd.heightSamples.data(),
+                    JPH::Vec3(sd.offset.x, sd.offset.y, sd.offset.z),
+                    JPH::Vec3(sd.heightScale.x, sd.heightScale.y, sd.heightScale.z),
+                    static_cast<JPH::uint>(sd.heightSampleCount));
+
+                auto res = hs.Create();
+                if (res.HasError())
+                {
+                    std::cout << "[kPhysicsObject] HeightField build failed: "
                               << res.GetError().c_str() << std::endl;
                     return false;
                 }

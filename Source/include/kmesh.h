@@ -139,6 +139,12 @@ namespace kemena
         void setTerrainData(int gridX, int gridZ, float worldSize, int heightRes,
                             const kString &heightFile, const kString &splatFile);
 
+        /** @brief Terrain metadata getters (0 / empty for non-terrain meshes). */
+        int    getTerrainHeightRes() const { return m_terrainHeightRes; }
+        float  getTerrainWorldSize() const { return m_terrainWorldSize; }
+        int    getTerrainGridX() const { return m_terrainGridX; }
+        int    getTerrainGridZ() const { return m_terrainGridZ; }
+
         /** @brief Propagates a local position change to this mesh and its children. */
         void setPosition(kVec3 newPosition) override;
         /** @brief Propagates a local rotation change to this mesh and its children. */

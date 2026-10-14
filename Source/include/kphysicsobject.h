@@ -50,13 +50,14 @@ namespace kemena
     /** @brief Collision shape type. */
     enum class kPhysicsShapeType
     {
-        Sphere,     ///< Uniform sphere defined by radius.
-        Box,        ///< Axis-aligned box defined by half-extents.
-        Capsule,    ///< Capsule (cylinder + hemispherical end-caps) defined by radius + total height.
-        Cylinder,   ///< Cylinder defined by radius + total height.
-        ConvexHull, ///< Convex hull of the object's mesh vertices; any motion type.
-        Mesh,       ///< Triangle mesh from the object's mesh; static-only (Jolt restriction).
-        Plane,      ///< Infinite plane (object's local +Y); static-only (Jolt restriction).
+        Sphere,      ///< Uniform sphere defined by radius.
+        Box,         ///< Axis-aligned box defined by half-extents.
+        Capsule,     ///< Capsule (cylinder + hemispherical end-caps) defined by radius + total height.
+        Cylinder,    ///< Cylinder defined by radius + total height.
+        ConvexHull,  ///< Convex hull of the object's mesh vertices; any motion type.
+        Mesh,        ///< Triangle mesh from the object's mesh; static-only (Jolt restriction).
+        Plane,       ///< Infinite plane (object's local +Y); static-only (Jolt restriction).
+        HeightField, ///< Regular height grid (JPH::HeightFieldShape); static-only. Best for terrain.
     };
 
     /**
@@ -96,6 +97,14 @@ namespace kemena
         kVec3                 customScale = kVec3(1.0f, 1.0f, 1.0f);///< ConvexHull / Mesh per-axis scale.
         std::vector<kVec3>    meshVertices;                         ///< Mesh / ConvexHull source vertices.
         std::vector<uint32_t> meshIndices;                          ///< Mesh source indices (triplets per triangle).
+
+        // HeightField (terrain) shape. A square height grid of
+        // heightSampleCount x heightSampleCount samples, row-major
+        // (index = z * heightSampleCount + x). heightScale.x / .z are the
+        // world-space sample spacing and heightScale.y scales the heights.
+        std::vector<float>    heightSamples;                        ///< HeightField: row-major float heights.
+        int                   heightSampleCount = 0;                ///< HeightField: samples per side (2^n + 1).
+        kVec3                 heightScale = kVec3(1.0f, 1.0f, 1.0f);///< HeightField: Jolt scale (x/z = spacing).
     };
 
     // -------------------------------------------------------------------------

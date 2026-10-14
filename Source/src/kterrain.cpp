@@ -151,6 +151,10 @@ namespace kemena
         j["maxHeight"] = maxHeight;
         j["slopeMin"] = slopeMin;
         j["slopeMax"] = slopeMax;
+        j["albedoPath"] = albedoPath;
+        j["normalPath"] = normalPath;
+        j["ormPath"] = ormPath;
+        j["maskPath"] = maskPath;
     }
 
     void kTerrainLayer::deserialize(const json &j)
@@ -167,6 +171,14 @@ namespace kemena
             slopeMin = j["slopeMin"].get<float>();
         if (j.contains("slopeMax"))
             slopeMax = j["slopeMax"].get<float>();
+        if (j.contains("albedoPath"))
+            albedoPath = j["albedoPath"].get<kString>();
+        if (j.contains("normalPath"))
+            normalPath = j["normalPath"].get<kString>();
+        if (j.contains("ormPath"))
+            ormPath = j["ormPath"].get<kString>();
+        if (j.contains("maskPath"))
+            maskPath = j["maskPath"].get<kString>();
     }
 
     // ============================================================================
@@ -179,7 +191,13 @@ namespace kemena
     {
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
         m_heightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
-        m_splatData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * 4, 0);
+        m_weightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * kMaxTerrainLayers, 0);
+
+        // Default: layer 0 fully covers the tile.
+        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+        for (size_t i = 0; i < pixels; ++i)
+            m_weightData[i * kMaxTerrainLayers + 0] = 255;
+
         setType(NODE_TYPE_TERRAIN);
     }
 
@@ -201,32 +219,171 @@ namespace kemena
 
     void kTerrain::createSplatTexture()
     {
-        if (m_splatTexture != 0)
+        kDriver *driver = kDriver::getCurrent();
+        if (!driver)
             return;
 
-        kDriver *driver = kDriver::getCurrent();
-        m_splatTexture = driver->createTexture2D(m_heightRes, m_heightRes,
-                                                  kTextureFormat::TEX_FORMAT_RGBA,
-                                                  m_splatData.data(),
-                                                  kTextureWrap::CLAMP_TO_EDGE,
-                                                  kTextureFilter::LINEAR,
-                                                  kTextureFilter::LINEAR,
-                                                  false);
+        const unsigned char *wd = m_weightData.data();
+        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+
+        // Pack the 16 per-sample layer weights into four RGBA weight-map textures.
+        for (int w = 0; w < 4; ++w)
+        {
+            std::vector<unsigned char> ch(pixels * 4);
+            for (size_t i = 0; i < pixels; ++i)
+                for (int c = 0; c < 4; ++c)
+                    ch[i * 4 + c] = wd[i * kMaxTerrainLayers + w * 4 + c];
+
+            m_weightTextures[w] = driver->createTexture2D(
+                m_heightRes, m_heightRes, kTextureFormat::TEX_FORMAT_RGBA,
+                ch.data(), kTextureWrap::CLAMP_TO_EDGE,
+                kTextureFilter::LINEAR, kTextureFilter::LINEAR, false);
+        }
     }
 
     void kTerrain::updateSplatTexture()
     {
-        if (m_splatTexture == 0)
+        kDriver *driver = kDriver::getCurrent();
+        if (!driver)
+            return;
+        if (m_weightTextures[0] == 0)
         {
             createSplatTexture();
             return;
         }
 
+        const unsigned char *wd = m_weightData.data();
+        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+        for (int w = 0; w < 4; ++w)
+        {
+            std::vector<unsigned char> ch(pixels * 4);
+            for (size_t i = 0; i < pixels; ++i)
+                for (int c = 0; c < 4; ++c)
+                    ch[i * 4 + c] = wd[i * kMaxTerrainLayers + w * 4 + c];
+
+            driver->uploadTexture2DSub(m_weightTextures[w], 0, 0, 0,
+                                       m_heightRes, m_heightRes,
+                                       kTextureFormat::TEX_FORMAT_RGBA, ch.data());
+        }
+    }
+
+    // ============================================================================
+    // Weight-map helpers + layer texture arrays
+    // ============================================================================
+
+    unsigned char kTerrain::getWeight(int x, int z, int layer) const
+    {
+        if (x < 0 || x >= m_heightRes || z < 0 || z >= m_heightRes ||
+            layer < 0 || layer >= kMaxTerrainLayers)
+            return 0;
+        return m_weightData[(static_cast<size_t>(z) * m_heightRes + x) * kMaxTerrainLayers + layer];
+    }
+
+    void kTerrain::setWeight(int x, int z, int layer, unsigned char v)
+    {
+        if (x < 0 || x >= m_heightRes || z < 0 || z >= m_heightRes ||
+            layer < 0 || layer >= kMaxTerrainLayers)
+            return;
+        m_weightData[(static_cast<size_t>(z) * m_heightRes + x) * kMaxTerrainLayers + layer] = v;
+    }
+
+    void kTerrain::createLayerArrays()
+    {
         kDriver *driver = kDriver::getCurrent();
-        driver->uploadTexture2DSub(m_splatTexture, 0, 0, 0,
-                                   m_heightRes, m_heightRes,
-                                   kTextureFormat::TEX_FORMAT_RGBA,
-                                   m_splatData.data());
+        if (!driver)
+            return;
+
+        // Nothing to build unless at least one layer references an image.
+        bool anyPath = false;
+        for (const auto &ly : m_layers)
+            if (!ly.albedoPath.empty() || !ly.normalPath.empty() ||
+                !ly.ormPath.empty() || !ly.maskPath.empty())
+            {
+                anyPath = true;
+                break;
+            }
+        if (!anyPath)
+            return;
+
+        const int S = kTerrainArraySize;
+        const int L = kMaxTerrainLayers;
+        const size_t layerBytes = static_cast<size_t>(S) * S * 4;
+
+        // kind: 0 albedo, 1 normal, 2 orm, 3 mask
+        auto build = [&](uint32_t &outId, int kind,
+                         const unsigned char def[4], bool srgb) -> void
+        {
+            std::vector<unsigned char> buf(layerBytes * L);
+            for (int layer = 0; layer < L; ++layer)
+            {
+                unsigned char *dst = buf.data() + static_cast<size_t>(layer) * layerBytes;
+                for (int i = 0; i < S * S; ++i)
+                {
+                    dst[i * 4 + 0] = def[0];
+                    dst[i * 4 + 1] = def[1];
+                    dst[i * 4 + 2] = def[2];
+                    dst[i * 4 + 3] = def[3];
+                }
+
+                if (layer >= static_cast<int>(m_layers.size()))
+                    continue;
+
+                const kTerrainLayer &ly = m_layers[layer];
+                const kString &path = (kind == 0) ? ly.albedoPath
+                                    : (kind == 1) ? ly.normalPath
+                                    : (kind == 2) ? ly.ormPath
+                                                  : ly.maskPath;
+                if (path.empty())
+                    continue;
+
+                int iw = 0, ih = 0, ic = 0;
+                unsigned char *img = stbi_load(path.c_str(), &iw, &ih, &ic, 4);
+                if (!img)
+                    continue;
+
+                int cw = (std::min)(iw, S);
+                int ch = (std::min)(ih, S);
+                for (int y = 0; y < ch; ++y)
+                    for (int x = 0; x < cw; ++x)
+                    {
+                        size_t si = (static_cast<size_t>(y) * iw + x) * 4;
+                        size_t di = (static_cast<size_t>(y) * S + x) * 4;
+                        dst[di + 0] = img[si + 0];
+                        dst[di + 1] = img[si + 1];
+                        dst[di + 2] = img[si + 2];
+                        dst[di + 3] = img[si + 3];
+                    }
+                stbi_image_free(img);
+            }
+
+            outId = driver->createTexture2DArray(
+                S, S, L,
+                srgb ? kTextureFormat::TEX_FORMAT_SRGBA : kTextureFormat::TEX_FORMAT_RGBA,
+                buf.data(), kTextureWrap::REPEAT,
+                kTextureFilter::LINEAR_MIPMAP_LINEAR, kTextureFilter::LINEAR, true);
+        };
+
+        const unsigned char white[4] = {255, 255, 255, 255};
+        const unsigned char nrm[4]   = {128, 128, 255, 255};
+        const unsigned char orm[4]   = {255, 255, 0, 255};
+        const unsigned char mask[4]  = {255, 255, 255, 255};
+
+        build(m_albedoArray, 0, white, true);
+        build(m_normalArray, 1, nrm, false);
+        build(m_ormArray,    2, orm, false);
+        build(m_maskArray,   3, mask, false);
+    }
+
+    void kTerrain::rebuildLayerArrays()
+    {
+        kDriver *driver = kDriver::getCurrent();
+        if (!driver)
+            return;
+        if (m_albedoArray) { driver->deleteTexture(m_albedoArray); m_albedoArray = 0; }
+        if (m_normalArray) { driver->deleteTexture(m_normalArray); m_normalArray = 0; }
+        if (m_ormArray)    { driver->deleteTexture(m_ormArray);    m_ormArray = 0; }
+        if (m_maskArray)   { driver->deleteTexture(m_maskArray);   m_maskArray = 0; }
+        createLayerArrays();
     }
 
     // ============================================================================
@@ -433,26 +590,17 @@ namespace kemena
         if (!data)
             return false;
 
-        if (w == m_heightRes && h == m_heightRes)
+        // PNG splat maps carry the legacy 4 channels (layers 0..3).
+        int copyW = (std::min)(w, m_heightRes);
+        int copyH = (std::min)(h, m_heightRes);
+        for (int z = 0; z < copyH; ++z)
         {
-            m_splatData.assign(data, data + static_cast<size_t>(w) * h * 4);
-        }
-        else
-        {
-            int copyW = (std::min)(w, m_heightRes);
-            int copyH = (std::min)(h, m_heightRes);
-            m_splatData.assign(static_cast<size_t>(m_heightRes) * m_heightRes * 4, 0);
-            for (int z = 0; z < copyH; ++z)
+            for (int x = 0; x < copyW; ++x)
             {
-                for (int x = 0; x < copyW; ++x)
-                {
-                    size_t srcIdx = static_cast<size_t>(z * w + x) * 4;
-                    size_t dstIdx = static_cast<size_t>(z * m_heightRes + x) * 4;
-                    m_splatData[dstIdx + 0] = data[srcIdx + 0];
-                    m_splatData[dstIdx + 1] = data[srcIdx + 1];
-                    m_splatData[dstIdx + 2] = data[srcIdx + 2];
-                    m_splatData[dstIdx + 3] = data[srcIdx + 3];
-                }
+                size_t srcIdx = (static_cast<size_t>(z) * w + x) * 4;
+                size_t dstIdx = (static_cast<size_t>(z) * m_heightRes + x) * kMaxTerrainLayers;
+                for (int c = 0; c < 4; ++c)
+                    m_weightData[dstIdx + c] = data[srcIdx + c];
             }
         }
 
@@ -462,8 +610,13 @@ namespace kemena
 
     bool kTerrain::saveSplatMap(const kString &path) const
     {
+        std::vector<unsigned char> out(static_cast<size_t>(m_heightRes) * m_heightRes * 4);
+        for (size_t i = 0; i < static_cast<size_t>(m_heightRes) * m_heightRes; ++i)
+            for (int c = 0; c < 4; ++c)
+                out[i * 4 + c] = m_weightData[i * kMaxTerrainLayers + c];
+
         return stbi_write_png(path.c_str(), m_heightRes, m_heightRes, 4,
-                              m_splatData.data(), m_heightRes * 4) != 0;
+                              out.data(), m_heightRes * 4) != 0;
     }
 
     bool kTerrain::saveHeightMapPng(const kString &path) const
@@ -625,55 +778,75 @@ namespace kemena
             m_mesh = nullptr;
         }
 
-        // Create splat texture on GPU
-        if (m_splatTexture != 0)
+        // (Re)create the four GPU weight-map textures packing the 16 layers, and
+        // build the per-layer texture arrays (once, until the layer set changes).
+        kDriver *driver = kDriver::getCurrent();
+        for (int w = 0; w < 4; ++w)
         {
-            kDriver::getCurrent()->deleteTexture(m_splatTexture);
-            m_splatTexture = 0;
+            if (m_weightTextures[w] != 0)
+            {
+                driver->deleteTexture(m_weightTextures[w]);
+                m_weightTextures[w] = 0;
+            }
         }
         createSplatTexture();
+        // Layer texture arrays are built lazily (each costs arraySize^2 * 16 * 4
+        // bytes), by rebuildLayerArrays() from the editor once the layer image
+        // paths are set — so tiles that never use the array path pay nothing and
+        // the default 4-layer splat path keeps rendering.
 
         int res = m_heightRes;
         float half = m_worldSize * 0.5f;
 
-        // Build vertex positions with actual Y from height data.
-        // No height map texture or vertex shader displacement is needed.
-        m_mesh = new kMesh();
-        m_mesh->reserveSpace(static_cast<size_t>(res) * res);
+        // Distance LOD: build the mesh from every m_lodStep-th height sample.
+        // Steps are powers of two that divide (res-1) so the reduced grid stays
+        // aligned to the tile edges (513 -> 512 samples -> step 1, 2, 4, 8, ...).
+        // This is a practical stand-in for a GPU clipmap: near tiles render at
+        // full resolution, distant tiles at a fraction of the vertex count.
+        int step = (std::max)(1, m_lodStep);
+        if (step >= res)
+            step = 1;
+        int gridN = (res - 1) / step + 1;
 
-        for (int z = 0; z < res; ++z)
+        m_mesh = new kMesh();
+        m_mesh->reserveSpace(static_cast<size_t>(gridN) * gridN);
+
+        for (int gz = 0; gz < gridN; ++gz)
         {
-            for (int x = 0; x < res; ++x)
+            int z = (std::min)(gz * step, res - 1);
+            for (int gx = 0; gx < gridN; ++gx)
             {
+                int x = (std::min)(gx * step, res - 1);
                 float h = m_heightData[z * res + x];
                 m_mesh->addVertex(kVec3(
                     -half + static_cast<float>(x) * m_sampleSpacing,
                     h,
                     -half + static_cast<float>(z) * m_sampleSpacing));
                 m_mesh->addUV(kVec2(
-                    static_cast<float>(x) / static_cast<float>(res - 1),
-                    static_cast<float>(z) / static_cast<float>(res - 1)));
+                    static_cast<float>(gx) / static_cast<float>(gridN - 1),
+                    static_cast<float>(gz) / static_cast<float>(gridN - 1)));
             }
         }
 
         // Compute normals from actual geometry using central differences
-        for (int z = 0; z < res; ++z)
+        for (int gz = 0; gz < gridN; ++gz)
         {
-            for (int x = 0; x < res; ++x)
+            int z = (std::min)(gz * step, res - 1);
+            for (int gx = 0; gx < gridN; ++gx)
             {
-                kVec3 n = computeNormal(x, z);
-                m_mesh->addNormal(n);
+                int x = (std::min)(gx * step, res - 1);
+                m_mesh->addNormal(computeNormal(x, z));
             }
         }
 
         // Add indices (two triangles per quad)
-        for (int z = 0; z < res - 1; ++z)
+        for (int gz = 0; gz < gridN - 1; ++gz)
         {
-            for (int x = 0; x < res - 1; ++x)
+            for (int gx = 0; gx < gridN - 1; ++gx)
             {
-                uint32_t tl = static_cast<uint32_t>(z * res + x);
+                uint32_t tl = static_cast<uint32_t>(gz * gridN + gx);
                 uint32_t tr = tl + 1;
-                uint32_t bl = static_cast<uint32_t>((z + 1) * res + x);
+                uint32_t bl = static_cast<uint32_t>((gz + 1) * gridN + gx);
                 uint32_t br = bl + 1;
 
                 m_mesh->addIndex(tl);
@@ -720,28 +893,102 @@ namespace kemena
         }
         else
         {
-            // --- Create default terrain material with embedded TerrainPBR shader ---
-            kShader *terrainShader = new kShader();
-            terrainShader->loadGlslCode(kTerrainShaderSrc);
+            // --- Create default terrain material with the TerrainPBR shader ---
+            // Prefer the resource shader (full 4-layer splatting plus the
+            // stochastic anti-tiling / triplanar / noise-variegation controls,
+            // with a matching HLSL variant on D3D11).  It is compiled once and
+            // shared by every tile; the embedded minimal source stays as a
+            // fallback for builds whose resources are unavailable.
+            static kShader *s_terrainShader = nullptr;
+            if (s_terrainShader == nullptr)
+            {
+                if (m_assetManager)
+                    s_terrainShader = m_assetManager->loadGlslFromResource("SHADER_TERRAIN_PBR");
+
+                if (s_terrainShader == nullptr)
+                {
+                    s_terrainShader = new kShader();
+                    s_terrainShader->loadGlslCode(kTerrainShaderSrc);
+                }
+            }
 
             m_terrainMaterial = new kMaterial();
-            m_terrainMaterial->setShader(terrainShader);
+            m_terrainMaterial->setShader(s_terrainShader);
             m_terrainMaterial->setDiffuseColor(kVec3(1.0f, 1.0f, 1.0f)); // white
             m_terrainMaterial->setAmbientColor(kVec3(1.0f, 1.0f, 1.0f));
             m_terrainMaterial->setMetallic(0.0f);
             m_terrainMaterial->setRoughness(0.5f);
 
+            // Defaults for the TerrainPBR controls so a freshly created tile gets
+            // the improved look (world-space tiling + stochastic anti-tiling +
+            // triplanar cliffs) without any editor input. u_TileWorldSize must
+            // match this tile's world size for the seam-free world UVs.
+            for (int li = 0; li < 4; ++li)
+                m_terrainMaterial->setParamFloat("u_Tiling[" + std::to_string(li) + "]", 16.0f);
+            m_terrainMaterial->setParamFloat("u_BlendSharpness", 1.0f);
+            m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
+            m_terrainMaterial->setParamFloat("u_Stochastic", 1.0f);
+            m_terrainMaterial->setParamFloat("u_TriplanarStrength", 0.75f);
+            m_terrainMaterial->setParamFloat("u_TriplanarSharpness", 3.0f);
+            m_terrainMaterial->setParamFloat("u_NoiseVariegation", 0.25f);
+            m_terrainMaterial->setParamFloat("u_NoiseScale", 0.02f);
+            // Masked blending is off until a layer albedo carries an alpha mask.
+            m_terrainMaterial->setParamFloat("u_MaskedBlend", 0.0f);
+
             m_mesh->setMaterial(m_terrainMaterial, false);
         }
 
-        // Bind splat texture to the material
-        if (m_splatTexture != 0)
+        // Bind the four weight-map textures and the per-layer texture arrays to
+        // the material. u_UseArrays selects the 16-layer array path in TerrainPBR.
+        if (kMaterial *mat = m_mesh->getMaterial())
         {
-            kTexture *splatTex = new kTexture();
-            splatTex->setTextureID(m_splatTexture);
-            splatTex->setTextureName("u_SplatMap");
-            splatTex->setType(kTextureType::TEX_TYPE_2D);
-            m_mesh->getMaterial()->setParamSampler2D("u_SplatMap", splatTex);
+            for (int w = 0; w < 4; ++w)
+            {
+                if (m_weightTextures[w] == 0)
+                    continue;
+                kString name = "u_WeightMap" + std::to_string(w);
+                kTexture *wt = new kTexture();
+                wt->setTextureID(m_weightTextures[w]);
+                wt->setTextureName(name);
+                wt->setType(kTextureType::TEX_TYPE_2D);
+                mat->setParamSampler2D(name, wt);
+            }
+
+            // Legacy alias: weight map 0 doubles as the old u_SplatMap.
+            if (m_weightTextures[0] != 0)
+            {
+                kTexture *splatTex = new kTexture();
+                splatTex->setTextureID(m_weightTextures[0]);
+                splatTex->setTextureName("u_SplatMap");
+                splatTex->setType(kTextureType::TEX_TYPE_2D);
+                mat->setParamSampler2D("u_SplatMap", splatTex);
+            }
+
+            auto bindArray = [&](uint32_t id, const char *name)
+            {
+                if (id == 0)
+                    return;
+                kTexture *t = new kTexture();
+                t->setTextureID(id);
+                t->setTextureName(name);
+                t->setType(kTextureType::TEX_TYPE_2D_ARRAY);
+                mat->setParamSampler2D(name, t);
+            };
+            bindArray(m_albedoArray, "u_AlbedoArray");
+            bindArray(m_normalArray, "u_NormalArray");
+            bindArray(m_ormArray,    "u_ORMArray");
+            bindArray(m_maskArray,   "u_MaskArray");
+
+            mat->setParamFloat("u_UseArrays",
+                (m_albedoArray != 0 && m_normalArray != 0 && m_ormArray != 0) ? 1.0f : 0.0f);
+
+            // Ensure the 16 per-layer tiling uniforms exist (array path).
+            for (int l = 0; l < kMaxTerrainLayers; ++l)
+            {
+                kString tn = "u_Tiling[" + std::to_string(l) + "]";
+                if (!mat->hasParam(tn))
+                    mat->setParamFloat(tn, 16.0f);
+            }
         }
 
         // Compute AABB from height data
@@ -765,10 +1012,28 @@ namespace kemena
         m_loaded = true;
     }
 
+    void kTerrain::setLodStep(int step)
+    {
+        step = (std::max)(1, step);
+        if (step == m_lodStep)
+            return;
+        m_lodStep = step;
+        if (m_loaded)
+            rebuildMesh(true);
+    }
+
     void kTerrain::updateMesh()
     {
         if (!m_mesh || !m_loaded)
             return;
+
+        // The fast sub-update assumes a full-resolution vertex grid; any LOD
+        // decimation requires a full rebuild instead.
+        if (m_lodStep != 1)
+        {
+            rebuildMesh(true);
+            return;
+        }
 
         // Safety check: GPU VBO must exist before calling glBufferSubData
         // If position VBO is 0, do a full rebuild instead of fast sub-update
@@ -816,11 +1081,19 @@ namespace kemena
 
     void kTerrain::unload()
     {
-        if (m_splatTexture != 0)
+        kDriver *driver = kDriver::getCurrent();
+        for (int w = 0; w < 4; ++w)
         {
-            kDriver::getCurrent()->deleteTexture(m_splatTexture);
-            m_splatTexture = 0;
+            if (m_weightTextures[w] != 0)
+            {
+                driver->deleteTexture(m_weightTextures[w]);
+                m_weightTextures[w] = 0;
+            }
         }
+        if (m_albedoArray) { driver->deleteTexture(m_albedoArray); m_albedoArray = 0; }
+        if (m_normalArray) { driver->deleteTexture(m_normalArray); m_normalArray = 0; }
+        if (m_ormArray)    { driver->deleteTexture(m_ormArray);    m_ormArray = 0; }
+        if (m_maskArray)   { driver->deleteTexture(m_maskArray);   m_maskArray = 0; }
 
         if (m_mesh)
         {
@@ -878,7 +1151,12 @@ namespace kemena
 
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
         m_heightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
-        m_splatData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * 4, 0);
+        m_weightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * kMaxTerrainLayers, 0);
+
+        // Default: layer 0 fully covers the tile until a weight map is loaded.
+        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+        for (size_t i = 0; i < pixels; ++i)
+            m_weightData[i * kMaxTerrainLayers + 0] = 255;
 
         if (j.contains("layers"))
         {
@@ -946,6 +1224,19 @@ namespace kemena
 
                     if (tile && !tile->isLoaded())
                         loadTile(tile);
+
+                    // Distance LOD: decimate distant tiles (near = full res).
+                    if (tile && tile->isLoaded())
+                    {
+                        int lod = 1;
+                        if (distXZ > m_worldSize * 3.0f)
+                            lod = 8;
+                        else if (distXZ > m_worldSize * 2.0f)
+                            lod = 4;
+                        else if (distXZ > m_worldSize * 1.25f)
+                            lod = 2;
+                        tile->setLodStep(lod);
+                    }
                 }
             }
         }

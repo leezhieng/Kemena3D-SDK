@@ -543,6 +543,48 @@ namespace kemena
                         continue;
                     }
                 }
+                // HeightField (terrain): build the sample grid from the tile mesh's
+                // vertex Y values. Works at any LOD because the grid side is derived
+                // from the (square) vertex count rather than assumed to be full-res.
+                else if (desc.shape.type == kPhysicsShapeType::HeightField)
+                {
+                    if (node->getType() == NODE_TYPE_MESH)
+                    {
+                        kMesh *m = static_cast<kMesh *>(node);
+                        std::vector<kVec3> verts = m->getVertices();
+                        size_t n = verts.size();
+                        int g = static_cast<int>(std::lround(std::sqrt(static_cast<double>(n))));
+                        if (g >= 2 && static_cast<size_t>(g) * g == n)
+                        {
+                            desc.shape.heightSamples.resize(n);
+                            for (size_t i = 0; i < n; ++i)
+                                desc.shape.heightSamples[i] = verts[i].y;
+                            desc.shape.heightSampleCount = g;
+
+                            float world = m->getTerrainWorldSize();
+                            if (world <= 0.0f)
+                                world = 256.0f;
+                            float spacing = world / static_cast<float>(g - 1);
+                            float half = world * 0.5f;
+                            desc.shape.heightScale = kVec3(spacing, 1.0f, spacing);
+                            // The mesh is centred on the tile origin, so sample (0,0)
+                            // sits at the (-half, -half) corner in local space.
+                            desc.shape.offset = kVec3(-half, 0.0f, -half);
+                        }
+                        else
+                        {
+                            printf("kWorld::startPhysics: HeightField grid not square on '%s' — skipped.\n",
+                                   node->getName().c_str());
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        printf("kWorld::startPhysics: HeightField on non-mesh node '%s' — skipped.\n",
+                               node->getName().c_str());
+                        continue;
+                    }
+                }
 
                 if (kPhysicsObject *body = physicsManager->createObject(desc))
                 {

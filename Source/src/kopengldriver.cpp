@@ -765,6 +765,42 @@ namespace kemena
         return static_cast<uint32_t>(id);
     }
 
+    uint32_t kOpenGLDriver::createTexture2DArray(int width, int height, int layers,
+                                                 kTextureFormat format, const void *data,
+                                                 kTextureWrap wrap,
+                                                 kTextureFilter minFilter,
+                                                 kTextureFilter magFilter,
+                                                 bool generateMips)
+    {
+        GLuint id = 0;
+        glGenTextures(1, &id);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, id);
+
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, toGLWrap(wrap));
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, toGLWrap(wrap));
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, toGLMinFilter(minFilter, generateMips));
+        glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, toGLMagFilter(magFilter));
+
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, toGLInternalFormat(format),
+                     width, height, layers, 0, toGLBaseFormat(format), GL_UNSIGNED_BYTE, data);
+        if (generateMips)
+            glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+        return static_cast<uint32_t>(id);
+    }
+
+    void kOpenGLDriver::uploadTexture2DArrayLayer(uint32_t id, int layer, int width, int height,
+                                                  kTextureFormat format, const void *data)
+    {
+        glBindTexture(GL_TEXTURE_2D_ARRAY, static_cast<GLuint>(id));
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, layer, width, height, 1,
+                        toGLBaseFormat(format), GL_UNSIGNED_BYTE, data);
+        glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+    }
+
     uint32_t kOpenGLDriver::createTextureCube(int width, int height,
                                                const void *faceData[6],
                                                bool generateMips)

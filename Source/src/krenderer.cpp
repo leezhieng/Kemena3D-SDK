@@ -1149,7 +1149,12 @@ void main()
                                     unit = paramTexUnit;
                                     shader->setValue(pn, unit); // sampler units use glUniform1i
                                 }
-                                driver->bindTexture2D(unit, p.texture->getTextureID());
+                                // Layered textures (terrain albedo/normal/ORM/mask arrays)
+                                // bind to the 2D-array target; plain 2D textures to GL_TEXTURE_2D.
+                                if (p.texture->getType() == kTextureType::TEX_TYPE_2D_ARRAY)
+                                    driver->bindTexture2DArray(unit, p.texture->getTextureID());
+                                else
+                                    driver->bindTexture2D(unit, p.texture->getTextureID());
                                 shader->setValue("has_" + pn, true);
                                 paramTexUnit++;
                             }
@@ -1179,6 +1184,7 @@ void main()
                     for (int k = matUnits - 1; k >= 0; k--)
                     {
                         driver->unbindTexture2D(k);
+                        driver->unbindTexture2DArray(k);
                         driver->unbindTextureCube(k);
                     }
                     driver->unbindTexture2DArray(shadowUnit);
@@ -1404,7 +1410,10 @@ void main()
                                     unit = paramTexUnit;
                                     shader->setValue(pn, unit);
                                 }
-                                driver->bindTexture2D(unit, p.texture->getTextureID());
+                                if (p.texture->getType() == kTextureType::TEX_TYPE_2D_ARRAY)
+                                    driver->bindTexture2DArray(unit, p.texture->getTextureID());
+                                else
+                                    driver->bindTexture2D(unit, p.texture->getTextureID());
                                 shader->setValue("has_" + pn, true);
                                 paramTexUnit++;
                             }

@@ -858,7 +858,10 @@ void main()
                             unit = paramTexUnit;
                             shader->setValue(pn, unit); // sampler units use glUniform1i
                         }
-                        driver->bindTexture2D(unit, p.texture->getTextureID());
+                        if (p.texture->getType() == kTextureType::TEX_TYPE_2D_ARRAY)
+                            driver->bindTexture2DArray(unit, p.texture->getTextureID());
+                        else
+                            driver->bindTexture2D(unit, p.texture->getTextureID());
                         shader->setValue("has_" + pn, true);
                         paramTexUnit++;
                     }

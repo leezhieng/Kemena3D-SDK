@@ -323,6 +323,14 @@ namespace kemena
                                  kTextureFilter minFilter = kTextureFilter::LINEAR_MIPMAP_LINEAR,
                                  kTextureFilter magFilter = kTextureFilter::LINEAR,
                                  bool generateMips = true) override;
+        uint32_t createTexture2DArray(int width, int height, int layers,
+                                      kTextureFormat format, const void *data,
+                                      kTextureWrap wrap = kTextureWrap::CLAMP_TO_EDGE,
+                                      kTextureFilter minFilter = kTextureFilter::LINEAR,
+                                      kTextureFilter magFilter = kTextureFilter::LINEAR,
+                                      bool generateMips = false) override;
+        void uploadTexture2DArrayLayer(uint32_t id, int layer, int width, int height,
+                                       kTextureFormat format, const void *data) override;
         uint32_t createTextureCube(int width, int height,
                                    const void *faceData[6],
                                    bool generateMips = true) override;

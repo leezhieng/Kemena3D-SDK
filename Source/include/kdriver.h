@@ -523,6 +523,59 @@ namespace kemena
                                         kTextureFormat format, const void *data) = 0;
 
         /**
+         * @brief Creates a 2D array (layered) texture and uploads every layer at mip 0.
+         *
+         * Used by the terrain system to pack the per-layer albedo / normal / ORM /
+         * mask textures into a single bindable object (sampler2DArray).
+         *
+         * The default implementation returns 0 so backends that do not support
+         * layered textures keep compiling and simply skip the feature — callers
+         * must treat 0 as "unsupported" and fall back.
+         *
+         * @param width        Per-layer width in pixels.
+         * @param height       Per-layer height in pixels.
+         * @param layers       Number of layers.
+         * @param format       Pixel format (RGB / RGBA / sRGB / sRGBA).
+         * @param data         Contiguous pixel data, layer-major (layer 0 first).
+         * @param wrap         UV wrap mode.
+         * @param minFilter    Minification filter.
+         * @param magFilter    Magnification filter.
+         * @param generateMips Generate a mip chain per layer.
+         * @return Opaque texture handle, or 0 if unsupported / on failure.
+         */
+        virtual uint32_t createTexture2DArray(int width, int height, int layers,
+                                              kTextureFormat format, const void *data,
+                                              kTextureWrap wrap = kTextureWrap::CLAMP_TO_EDGE,
+                                              kTextureFilter minFilter = kTextureFilter::LINEAR,
+                                              kTextureFilter magFilter = kTextureFilter::LINEAR,
+                                              bool generateMips = false)
+        {
+            (void)width; (void)height; (void)layers; (void)format; (void)data;
+            (void)wrap; (void)minFilter; (void)magFilter; (void)generateMips;
+            return 0;
+        }
+
+        /**
+         * @brief Uploads one layer of a 2D array texture at mip 0 (glTexSubImage3D).
+         *
+         * Default implementation is a no-op so backends without layered-texture
+         * support keep compiling; OpenGL overrides it. Used by the terrain system
+         * to fill the albedo / normal / ORM / mask arrays layer by layer.
+         *
+         * @param id     Array texture handle.
+         * @param layer  Destination layer index.
+         * @param width  Layer width in pixels.
+         * @param height Layer height in pixels.
+         * @param format Pixel format.
+         * @param data   Raw pixel bytes for the layer.
+         */
+        virtual void uploadTexture2DArrayLayer(uint32_t id, int layer, int width, int height,
+                                               kTextureFormat format, const void *data)
+        {
+            (void)id; (void)layer; (void)width; (void)height; (void)format; (void)data;
+        }
+
+        /**
          * @brief Uploads compressed (DXT/BCn) data to a mip level of a 2D texture.
          *
          * @param id       Texture handle.
