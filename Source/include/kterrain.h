@@ -65,6 +65,75 @@ namespace kemena
     };
 
     // ---------------------------------------------------------------------------
+    // Non-destructive height modifier layer
+    // ---------------------------------------------------------------------------
+
+    /** @brief Kind of height modifier stacked on top of the sculpted base. */
+    enum class KEMENA3D_API kTerrainHeightLayerType
+    {
+        Noise,            ///< Fractal noise (fBm / ridged / billowed).
+        HydraulicErosion, ///< Droplet erosion (weigert/SimpleErosion).
+        ThermalErosion,   ///< Talus-angle slope relaxation.
+        WindErosion,      ///< Directional material advection.
+        Hydrology         ///< D8 stream-power river carving.
+    };
+
+    /**
+     * @brief A non-destructive height modifier layer.
+     *
+     * Sculpting and height painting write to the tile's *base* height field.
+     * Generated operators (noise, erosion) do not touch the base: they keep a
+     * full-resolution @ref offsets buffer holding their delta over the composite
+     * of everything below them.  The rendered height is
+     * `base + Σ(enabled ? offsets * weight : 0)`, so a layer can be disabled,
+     * re-weighted or deleted without re-running its generator.
+     */
+    struct KEMENA3D_API kTerrainHeightLayer
+    {
+        kString name = "Layer";                              ///< Display name.
+        kTerrainHeightLayerType type = kTerrainHeightLayerType::Noise; ///< Generator kind.
+        bool enabled = true;                                 ///< Composited when true.
+        float weight = 1.0f;                                 ///< Strength multiplier on the delta.
+
+        // --- Noise parameters -------------------------------------------------
+        float noiseScale = 50.0f;      ///< Samples per noise cell.
+        float noiseAmplitude = 10.0f;  ///< World-unit amplitude.
+        int noiseOctaves = 4;          ///< fBm octave count.
+        int noiseSeed = 42;            ///< Lattice seed.
+        int noiseType = 0;             ///< 0 = fBm, 1 = ridged, 2 = billowed.
+        bool noiseAdditive = false;    ///< Add to the layer input instead of replacing it.
+
+        // --- Erosion parameters -----------------------------------------------
+        int droplets = 50000;          ///< Hydraulic droplet count.
+        float erodeRadius = 4.0f;      ///< Droplet brush radius (samples).
+        float erodeInertia = 0.05f;    ///< Droplet inertia.
+        float erodeCapacity = 4.0f;    ///< Sediment capacity factor.
+        float erodeDeposit = 0.3f;     ///< Deposition factor.
+        float erodeErode = 0.3f;       ///< Erosion factor.
+        float erodeEvaporate = 0.01f;  ///< Water evaporation per step.
+        float erodeGravity = 4.0f;     ///< Gravity constant.
+
+        int iterations = 8;            ///< Thermal iterations.
+        float talus = 0.4f;            ///< Talus threshold (height units).
+        float strength = 0.5f;         ///< Per-iteration relaxation strength.
+
+        float windDirection = 0.0f;    ///< Wind direction in radians.
+
+        float hydroK = 0.02f;          ///< Stream-power coefficient.
+        float hydroM = 0.5f;           ///< Area exponent.
+        float hydroN = 1.0f;           ///< Slope exponent.
+        float hydroDeposit = 0.1f;     ///< Deposition fraction.
+
+        /// Per-sample delta over the composite below this layer (heightRes*heightRes).
+        std::vector<float> offsets;
+
+        /** @brief Serializes the generator parameters (offsets are stored separately). */
+        void serialize(json &j) const;
+        /** @brief Deserializes the generator parameters (offsets are loaded separately). */
+        void deserialize(const json &j);
+    };
+
+    // ---------------------------------------------------------------------------
     // Terrain Tile
     // ---------------------------------------------------------------------------
 
@@ -288,6 +357,111 @@ namespace kemena
          */
         void setLayer(const kTerrainLayer &layer);
 
+        // --- Height field: sculpted base vs. generated modifier layers ----------
+
+        /**
+         * @brief Returns the raw sculpted base height field (sculpt + height paint).
+         *
+         * The base is what gets written to the tile's `.height` file.  The
+         * rendered height is the *composite* returned by getHeightData().
+         */
+        const float *getBaseHeightData() const { return m_baseHeightData.data(); }
+        float *getBaseHeightData() { return m_baseHeightData.data(); }
+
+        /**
+         * @brief Recomputes the composite height field.
+         *
+         * `m_heightData = base + Σ(enabled ? layer.offsets * layer.weight : 0)`.
+         * Call after touching the base or any layer, then updateMesh().
+         */
+        void recomposeHeight();
+
+        /** @brief Returns the non-destructive height modifier stack. */
+        const std::vector<kTerrainHeightLayer> &getHeightLayers() const { return m_heightLayers; }
+        std::vector<kTerrainHeightLayer> &getHeightLayers() { return m_heightLayers; }
+
+        /** @brief Appends a modifier layer (offsets zeroed); returns its index. */
+        int addHeightLayer(const kTerrainHeightLayer &layer);
+
+        /** @brief Removes a modifier layer and recomposites; false if out of range. */
+        bool removeHeightLayer(int index);
+
+        /**
+         * @brief (Re)generates one layer's offsets from a generator functor.
+         *
+         * @p generator is handed the composite of the base plus every layer below
+         * @p index, and must fill its output buffer with the layer's *absolute*
+         * result.  The delta over the input is stored, so weight/enabled later
+         * rescale without re-running the generator.
+         */
+        void generateHeightLayer(int index,
+                                 const std::function<void(const std::vector<float> &input,
+                                                          std::vector<float> &output)> &generator);
+
+        /** @brief Fills @p out with the composite of the base plus all layers below @p index. */
+        void buildLayerInput(int index, std::vector<float> &out) const;
+
+        // --- Resizing -----------------------------------------------------------
+
+        /**
+         * @brief Resamples the base height field and every layer to @p newHeightRes.
+         *
+         * Uses bilinear sampling; quality is intentionally not preserved.
+         */
+        void resizeHeightData(int newHeightRes);
+
+        /** @brief Resamples the 16-layer weight (splat) map to @p newHeightRes. */
+        void resizeWeightData(int newHeightRes);
+
+        /** @brief Changes the tile's world size and refreshes its material uniform. */
+        void setWorldSize(float worldSize);
+
+        // --- Internally owned assets --------------------------------------------
+
+        /**
+         * @brief Creates the tile's own `.height`, `.splat`, `.hlayers` and `.mat`
+         *        files inside @p dataDir (named after the mesh UUID).
+         *
+         * Safe to call repeatedly — existing files are only rewritten on save.
+         */
+        void createOwnedAssets(const kString &dataDir);
+
+        /** @brief Deletes the tile's owned asset files from disk. */
+        void destroyOwnedAssets();
+
+        /** @brief Absolute path of the owned `.height` file ("" when not created). */
+        const kString &getHeightFilePath() const { return m_heightFilePath; }
+        /** @brief Absolute path of the owned `.splat` file ("" when not created). */
+        const kString &getSplatFilePath() const { return m_splatFilePath; }
+        /** @brief Absolute path of the owned `.hlayers` file ("" when not created). */
+        const kString &getHeightLayersFilePath() const { return m_heightLayersFilePath; }
+        /** @brief Absolute path of the owned `.mat` file ("" when not created). */
+        const kString &getMaterialFilePath() const { return m_materialFilePath; }
+
+        /**
+         * @brief Adopts explicit owned-asset paths.
+         *
+         * Used when loading a world: the `.world` records the filenames the tile
+         * was saved with, and they do not have to match the manager's current
+         * naming scheme.
+         */
+        void adoptOwnedAssetPaths(const kString &heightFile, const kString &splatFile,
+                                  const kString &heightLayersFile, const kString &materialFile);
+
+        /**
+         * @brief Returns the terrain's internally managed material.
+         *
+         * Never user-assignable: the Terrain panel edits its parameters, and the
+         * inspector / drag-drop paths refuse to replace it.
+         */
+        kMaterial *getTerrainMaterial() const { return m_terrainMaterial; }
+
+        /** @brief Writes every owned asset (height, splat, layers, material) to disk. */
+        void saveOwnedAssets();
+
+        /** @brief Reads every owned asset (height, splat, layers, material) from disk. */
+        void loadOwnedAssets();
+
         // --- Mesh and rendering -------------------------------------------------
 
         /** @brief Returns the generated terrain kMesh (registered with the scene). */
@@ -410,9 +584,17 @@ namespace kemena
         int m_heightRes = 513;
         float m_sampleSpacing = 0.0f; ///< World-space distance between height samples.
 
-        std::vector<float> m_heightData;         ///< heightRes * heightRes floats.
+        std::vector<float> m_heightData;         ///< Composite height (base + modifier layers).
+        std::vector<float> m_baseHeightData;     ///< Sculpted/painted base height (persisted).
+        std::vector<kTerrainHeightLayer> m_heightLayers; ///< Non-destructive modifier stack.
         std::vector<unsigned char> m_weightData; ///< heightRes * heightRes * 16 bytes (16 layer weights).
         std::vector<kTerrainLayer> m_layers;     ///< Up to kMaxTerrainLayers material layers.
+
+        // Owned asset paths, filled by createOwnedAssets().
+        kString m_heightFilePath;      ///< <dataDir>/<uuid>.height
+        kString m_splatFilePath;       ///< <dataDir>/<uuid>.splat
+        kString m_heightLayersFilePath;///< <dataDir>/<uuid>.hlayers
+        kString m_materialFilePath;    ///< <dataDir>/<uuid>.mat
 
         uint32_t m_weightTextures[4] = {0, 0, 0, 0}; ///< GPU RGBA8 weight-map textures (4 x 4 layers).
         uint32_t m_albedoArray = 0; ///< GL_TEXTURE_2D_ARRAY of per-layer albedo (sRGB).
@@ -548,6 +730,29 @@ namespace kemena
         /** @brief Returns the height resolution of each tile. */
         int getHeightRes() const { return m_heightRes; }
 
+        /**
+         * @brief Sets the folder that owns every tile's asset files.
+         *
+         * Tiles created afterwards get their `.height`, `.splat`, `.hlayers` and
+         * `.mat` files inside this folder, named after the mesh UUID.  Existing
+         * tiles adopt the folder too, so a late project load still persists them.
+         */
+        void setAssetDirectory(const kString &directory);
+
+        /** @brief Returns the folder that owns the tiles' asset files. */
+        const kString &getAssetDirectory() const { return m_assetDirectory; }
+
+        /** @brief Adopts the manager's asset directory on every existing tile. */
+        void adoptAssetDirectory();
+
+        /**
+         * @brief Resizes every tile (and the manager's own world size / resolution).
+         *
+         * All tiles are resampled to @p heightRes; quality is intentionally not
+         * preserved.
+         */
+        void resizeAllTiles(float worldSize, int heightRes);
+
     private:
         /**
          * @brief Updates neighbor references for all tiles so stitching works.
@@ -568,6 +773,8 @@ namespace kemena
         kAssetManager *m_assetManager = nullptr;
         float m_worldSize = 256.0f;
         int m_heightRes = 513;
+
+        kString m_assetDirectory; ///< Folder owning tile .height/.splat/.hlayers/.mat files.
 
         std::unordered_map<uint64_t, std::unique_ptr<kTerrain>> m_tiles;
         std::unordered_set<uint64_t> m_loadedTiles; ///< Set of currently loaded tile keys.

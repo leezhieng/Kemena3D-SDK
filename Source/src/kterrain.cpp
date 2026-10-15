@@ -182,6 +182,78 @@ namespace kemena
     }
 
     // ============================================================================
+    // kTerrainHeightLayer
+    // ============================================================================
+
+    void kTerrainHeightLayer::serialize(json &j) const
+    {
+        j["name"] = name;
+        j["type"] = static_cast<int>(type);
+        j["enabled"] = enabled;
+        j["weight"] = weight;
+
+        j["noiseScale"] = noiseScale;
+        j["noiseAmplitude"] = noiseAmplitude;
+        j["noiseOctaves"] = noiseOctaves;
+        j["noiseSeed"] = noiseSeed;
+        j["noiseType"] = noiseType;
+        j["noiseAdditive"] = noiseAdditive;
+
+        j["droplets"] = droplets;
+        j["erodeRadius"] = erodeRadius;
+        j["erodeInertia"] = erodeInertia;
+        j["erodeCapacity"] = erodeCapacity;
+        j["erodeDeposit"] = erodeDeposit;
+        j["erodeErode"] = erodeErode;
+        j["erodeEvaporate"] = erodeEvaporate;
+        j["erodeGravity"] = erodeGravity;
+
+        j["iterations"] = iterations;
+        j["talus"] = talus;
+        j["strength"] = strength;
+        j["windDirection"] = windDirection;
+
+        j["hydroK"] = hydroK;
+        j["hydroM"] = hydroM;
+        j["hydroN"] = hydroN;
+        j["hydroDeposit"] = hydroDeposit;
+    }
+
+    void kTerrainHeightLayer::deserialize(const json &j)
+    {
+        name = j.value("name", name);
+        type = static_cast<kTerrainHeightLayerType>(j.value("type", static_cast<int>(type)));
+        enabled = j.value("enabled", enabled);
+        weight = j.value("weight", weight);
+
+        noiseScale = j.value("noiseScale", noiseScale);
+        noiseAmplitude = j.value("noiseAmplitude", noiseAmplitude);
+        noiseOctaves = j.value("noiseOctaves", noiseOctaves);
+        noiseSeed = j.value("noiseSeed", noiseSeed);
+        noiseType = j.value("noiseType", noiseType);
+        noiseAdditive = j.value("noiseAdditive", noiseAdditive);
+
+        droplets = j.value("droplets", droplets);
+        erodeRadius = j.value("erodeRadius", erodeRadius);
+        erodeInertia = j.value("erodeInertia", erodeInertia);
+        erodeCapacity = j.value("erodeCapacity", erodeCapacity);
+        erodeDeposit = j.value("erodeDeposit", erodeDeposit);
+        erodeErode = j.value("erodeErode", erodeErode);
+        erodeEvaporate = j.value("erodeEvaporate", erodeEvaporate);
+        erodeGravity = j.value("erodeGravity", erodeGravity);
+
+        iterations = j.value("iterations", iterations);
+        talus = j.value("talus", talus);
+        strength = j.value("strength", strength);
+        windDirection = j.value("windDirection", windDirection);
+
+        hydroK = j.value("hydroK", hydroK);
+        hydroM = j.value("hydroM", hydroM);
+        hydroN = j.value("hydroN", hydroN);
+        hydroDeposit = j.value("hydroDeposit", hydroDeposit);
+    }
+
+    // ============================================================================
     // kTerrain
     // ============================================================================
 
@@ -191,6 +263,7 @@ namespace kemena
     {
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
         m_heightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
+        m_baseHeightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
         m_weightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * kMaxTerrainLayers, 0);
 
         // Default: layer 0 fully covers the tile.
@@ -479,11 +552,13 @@ namespace kemena
 
         float worldRadiusSq = radius * radius;
 
+        // Sculpting and height painting only ever touch the *base* field; the
+        // generated modifier layers are composited back on top afterwards.
         // For Smooth mode, compute a local average first
         std::vector<float> smoothed;
         if (mode == BrushMode::Smooth)
         {
-            smoothed = m_heightData;
+            smoothed = m_baseHeightData;
             for (int z = zMin; z <= zMax; ++z)
             {
                 for (int x = xMin; x <= xMax; ++x)
@@ -499,7 +574,7 @@ namespace kemena
                         {
                             for (int nx = (std::max)(0, x - 1); nx <= (std::min)(m_heightRes - 1, x + 1); ++nx)
                             {
-                                sum += m_heightData[nz * m_heightRes + nx];
+                                sum += m_baseHeightData[nz * m_heightRes + nx];
                                 ++count;
                             }
                         }
@@ -523,10 +598,16 @@ namespace kemena
 
                 float dist = std::sqrt(distSq);
                 float t = dist / radius;
-                float falloff = std::cos(t * 3.14159265358979323846f * 0.5f);
-                falloff *= strength;
 
-                float oldVal = m_heightData[z * m_heightRes + x];
+                // One stamp has to be clearly visible. `strength` alone is a 0..1
+                // factor, and a single frame of it moved the surface by well under
+                // one sample spacing on a 256-unit tile — which is why a click
+                // looked like nothing happened. Scale the delta by the brush's own
+                // world radius so a click always digs a visible amount.
+                float falloff = std::cos(t * 3.14159265358979323846f * 0.5f);
+                falloff *= strength * (std::max)(radius * 0.5f, m_sampleSpacing);
+
+                float oldVal = m_baseHeightData[z * m_heightRes + x];
                 float newVal = oldVal;
 
                 switch (mode)
@@ -545,17 +626,55 @@ namespace kemena
                     break;
                 }
 
-                m_heightData[z * m_heightRes + x] = newVal;
+                m_baseHeightData[z * m_heightRes + x] = newVal;
             }
         }
+
+        // Fold the generated modifier layers back over the edited base.
+        recomposeHeight();
     }
 
     void kTerrain::fillHeight(float value)
     {
-        std::fill(m_heightData.begin(), m_heightData.end(), value);
+        std::fill(m_baseHeightData.begin(), m_baseHeightData.end(), value);
+        recomposeHeight();
         if (m_loaded)
         {
             updateMesh();
+        }
+    }
+
+    namespace
+    {
+        // Versioned header for the .height / .splat payloads.  Files written by
+        // older builds have no header (raw float32 / RGBA8 at the tile's current
+        // resolution) and are detected by the missing magic so they still load.
+        constexpr char kHeightMagic[4] = {'K', '3', 'D', 'H'};
+        constexpr uint32_t kHeightVersion = 1;
+
+        struct TerrainFileHeader
+        {
+            char magic[4];
+            uint32_t version;
+            int32_t res;
+            float worldSize;
+        };
+
+        // Creates a 1x1 solid-colour texture. Used to give the legacy 4-layer
+        // splat path neutral defaults so an untextured terrain never samples an
+        // unbound sampler (which shows whatever texture was bound last).
+        uint32_t makeSolidTexture(unsigned char r, unsigned char g,
+                                  unsigned char b, unsigned char a)
+        {
+            kDriver *driver = kDriver::getCurrent();
+            if (!driver)
+                return 0;
+
+            const unsigned char px[4] = {r, g, b, a};
+            return driver->createTexture2D(1, 1, kTextureFormat::TEX_FORMAT_RGBA,
+                                           px, kTextureWrap::REPEAT,
+                                           kTextureFilter::NEAREST,
+                                           kTextureFilter::NEAREST, false);
         }
     }
 
@@ -565,10 +684,38 @@ namespace kemena
         if (!file.is_open())
             return false;
 
-        file.read(reinterpret_cast<char *>(m_heightData.data()),
-                  static_cast<std::streamsize>(m_heightData.size() * sizeof(float)));
+        TerrainFileHeader hdr{};
+        file.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+
+        const bool versioned = file.good() &&
+                               std::memcmp(hdr.magic, kHeightMagic, 4) == 0 &&
+                               hdr.version == kHeightVersion &&
+                               hdr.res > 1;
+
+        if (versioned && hdr.res != m_heightRes)
+        {
+            // Adopt the stored resolution rather than misreading the payload.
+            m_heightRes = hdr.res;
+            m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
+            const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+            m_heightData.assign(pixels, 0.0f);
+            m_baseHeightData.assign(pixels, 0.0f);
+            m_weightData.assign(pixels * kMaxTerrainLayers, 0);
+        }
+        else if (!versioned)
+        {
+            // Legacy headerless blob: raw float32 at the tile's current resolution.
+            file.clear();
+            file.seekg(0, std::ios::beg);
+        }
+
+        file.read(reinterpret_cast<char *>(m_baseHeightData.data()),
+                  static_cast<std::streamsize>(m_baseHeightData.size() * sizeof(float)));
+        const bool ok = file.gcount() > 0;
         file.close();
-        return true;
+
+        recomposeHeight();
+        return ok;
     }
 
     bool kTerrain::saveHeightData(const kString &path) const
@@ -577,30 +724,83 @@ namespace kemena
         if (!file.is_open())
             return false;
 
-        file.write(reinterpret_cast<const char *>(m_heightData.data()),
-                   static_cast<std::streamsize>(m_heightData.size() * sizeof(float)));
+        TerrainFileHeader hdr{};
+        std::memcpy(hdr.magic, kHeightMagic, 4);
+        hdr.version = kHeightVersion;
+        hdr.res = m_heightRes;
+        hdr.worldSize = m_worldSize;
+
+        file.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+        file.write(reinterpret_cast<const char *>(m_baseHeightData.data()),
+                   static_cast<std::streamsize>(m_baseHeightData.size() * sizeof(float)));
         file.close();
         return true;
     }
 
     bool kTerrain::loadSplatMap(const kString &path)
     {
-        int w, h, channels;
-        unsigned char *data = stbi_load(path.c_str(), &w, &h, &channels, 4);
-        if (!data)
-            return false;
-
-        // PNG splat maps carry the legacy 4 channels (layers 0..3).
-        int copyW = (std::min)(w, m_heightRes);
-        int copyH = (std::min)(h, m_heightRes);
-        for (int z = 0; z < copyH; ++z)
+        // Preferred format: versioned binary carrying all 16 layer weights per
+        // sample, so nothing is lost on a save/load round trip.
+        std::ifstream file(path, std::ios::binary);
+        if (file.is_open())
         {
-            for (int x = 0; x < copyW; ++x)
+            TerrainFileHeader hdr{};
+            file.read(reinterpret_cast<char *>(&hdr), sizeof(hdr));
+            const bool versioned = file.good() &&
+                                   std::memcmp(hdr.magic, kHeightMagic, 4) == 0 &&
+                                   hdr.version == kHeightVersion &&
+                                   hdr.res > 1;
+            if (versioned)
             {
-                size_t srcIdx = (static_cast<size_t>(z) * w + x) * 4;
-                size_t dstIdx = (static_cast<size_t>(z) * m_heightRes + x) * kMaxTerrainLayers;
+                if (hdr.res != m_heightRes)
+                    resizeWeightData(hdr.res);
+                file.read(reinterpret_cast<char *>(m_weightData.data()),
+                          static_cast<std::streamsize>(m_weightData.size()));
+                const bool ok = file.gcount() > 0;
+                file.close();
+                return ok;
+            }
+            file.close();
+        }
+
+        // Legacy PNG: 4 channels carrying layers 0..3, bilinearly resampled so a
+        // stored map of a different size still maps across the whole tile.
+        int w = 0, h = 0, channels = 0;
+        unsigned char *data = stbi_load(path.c_str(), &w, &h, &channels, 4);
+        if (!data || w <= 0 || h <= 0)
+        {
+            if (data)
+                stbi_image_free(data);
+            return false;
+        }
+
+        const int res = m_heightRes;
+        for (int z = 0; z < res; ++z)
+        {
+            float fz = (res > 1) ? (static_cast<float>(z) / static_cast<float>(res - 1)) * (h - 1) : 0.0f;
+            int z0 = (std::min)(static_cast<int>(fz), h - 1);
+            int z1 = (std::min)(z0 + 1, h - 1);
+            float tz = fz - static_cast<float>(z0);
+            for (int x = 0; x < res; ++x)
+            {
+                float fx = (res > 1) ? (static_cast<float>(x) / static_cast<float>(res - 1)) * (w - 1) : 0.0f;
+                int x0 = (std::min)(static_cast<int>(fx), w - 1);
+                int x1 = (std::min)(x0 + 1, w - 1);
+                float tx = fx - static_cast<float>(x0);
+
+                size_t dst = (static_cast<size_t>(z) * res + x) * kMaxTerrainLayers;
                 for (int c = 0; c < 4; ++c)
-                    m_weightData[dstIdx + c] = data[srcIdx + c];
+                {
+                    float v00 = data[(static_cast<size_t>(z0) * w + x0) * 4 + c];
+                    float v10 = data[(static_cast<size_t>(z0) * w + x1) * 4 + c];
+                    float v01 = data[(static_cast<size_t>(z1) * w + x0) * 4 + c];
+                    float v11 = data[(static_cast<size_t>(z1) * w + x1) * 4 + c];
+                    float v0 = v00 + (v10 - v00) * tx;
+                    float v1 = v01 + (v11 - v01) * tx;
+                    float v = v0 + (v1 - v0) * tz;
+                    m_weightData[dst + c] =
+                        static_cast<unsigned char>(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v));
+                }
             }
         }
 
@@ -610,13 +810,21 @@ namespace kemena
 
     bool kTerrain::saveSplatMap(const kString &path) const
     {
-        std::vector<unsigned char> out(static_cast<size_t>(m_heightRes) * m_heightRes * 4);
-        for (size_t i = 0; i < static_cast<size_t>(m_heightRes) * m_heightRes; ++i)
-            for (int c = 0; c < 4; ++c)
-                out[i * 4 + c] = m_weightData[i * kMaxTerrainLayers + c];
+        std::ofstream file(path, std::ios::binary);
+        if (!file.is_open())
+            return false;
 
-        return stbi_write_png(path.c_str(), m_heightRes, m_heightRes, 4,
-                              out.data(), m_heightRes * 4) != 0;
+        TerrainFileHeader hdr{};
+        std::memcpy(hdr.magic, kHeightMagic, 4);
+        hdr.version = kHeightVersion;
+        hdr.res = m_heightRes;
+        hdr.worldSize = m_worldSize;
+
+        file.write(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
+        file.write(reinterpret_cast<const char *>(m_weightData.data()),
+                   static_cast<std::streamsize>(m_weightData.size()));
+        file.close();
+        return true;
     }
 
     bool kTerrain::saveHeightMapPng(const kString &path) const
@@ -666,6 +874,399 @@ namespace kemena
             }
         }
         m_layers.push_back(layer);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Height field: sculpted base + non-destructive modifier layers
+    // ---------------------------------------------------------------------------
+
+    void kTerrain::recomposeHeight()
+    {
+        m_heightData = m_baseHeightData;
+        const size_t n = m_heightData.size();
+        for (const auto &layer : m_heightLayers)
+        {
+            if (!layer.enabled || layer.weight == 0.0f || layer.offsets.size() != n)
+                continue;
+            const float w = layer.weight;
+            for (size_t i = 0; i < n; ++i)
+                m_heightData[i] += layer.offsets[i] * w;
+        }
+    }
+
+    int kTerrain::addHeightLayer(const kTerrainHeightLayer &layer)
+    {
+        kTerrainHeightLayer copy = layer;
+        copy.offsets.assign(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
+        m_heightLayers.push_back(std::move(copy));
+        return static_cast<int>(m_heightLayers.size()) - 1;
+    }
+
+    bool kTerrain::removeHeightLayer(int index)
+    {
+        if (index < 0 || index >= static_cast<int>(m_heightLayers.size()))
+            return false;
+        m_heightLayers.erase(m_heightLayers.begin() + index);
+        recomposeHeight();
+        return true;
+    }
+
+    void kTerrain::buildLayerInput(int index, std::vector<float> &out) const
+    {
+        out = m_baseHeightData;
+        const size_t n = out.size();
+        for (int i = 0; i < index && i < static_cast<int>(m_heightLayers.size()); ++i)
+        {
+            const auto &layer = m_heightLayers[static_cast<size_t>(i)];
+            if (!layer.enabled || layer.weight == 0.0f || layer.offsets.size() != n)
+                continue;
+            const float w = layer.weight;
+            for (size_t k = 0; k < n; ++k)
+                out[k] += layer.offsets[k] * w;
+        }
+    }
+
+    void kTerrain::generateHeightLayer(int index,
+                                       const std::function<void(const std::vector<float> &input,
+                                                                std::vector<float> &output)> &generator)
+    {
+        if (index < 0 || index >= static_cast<int>(m_heightLayers.size()) || !generator)
+            return;
+
+        std::vector<float> input;
+        buildLayerInput(index, input);
+
+        std::vector<float> output = input;
+        generator(input, output);
+
+        const size_t n = input.size();
+        if (output.size() != n)
+            output.resize(n, 0.0f);
+
+        // Store the delta over the layer's input, so weight/enabled can be
+        // re-tuned later without re-running the (potentially costly) generator.
+        auto &layer = m_heightLayers[static_cast<size_t>(index)];
+        layer.offsets.resize(n);
+        for (size_t i = 0; i < n; ++i)
+            layer.offsets[i] = output[i] - input[i];
+
+        recomposeHeight();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Resizing
+    // ---------------------------------------------------------------------------
+
+    // Bilinear resample of a square float field, preserving the tile's world extent.
+    static void resampleHeightField(const std::vector<float> &src, int srcRes, float worldSize,
+                                    std::vector<float> &dst, int dstRes)
+    {
+        dst.assign(static_cast<size_t>(dstRes) * dstRes, 0.0f);
+        if (src.empty() || srcRes < 2 || dstRes < 2)
+            return;
+
+        for (int z = 0; z < dstRes; ++z)
+        {
+            float fz = (static_cast<float>(z) / static_cast<float>(dstRes - 1)) *
+                       static_cast<float>(srcRes - 1);
+            int z0 = (std::min)(static_cast<int>(fz), srcRes - 1);
+            int z1 = (std::min)(z0 + 1, srcRes - 1);
+            float tz = fz - static_cast<float>(z0);
+            for (int x = 0; x < dstRes; ++x)
+            {
+                float fx = (static_cast<float>(x) / static_cast<float>(dstRes - 1)) *
+                           static_cast<float>(srcRes - 1);
+                int x0 = (std::min)(static_cast<int>(fx), srcRes - 1);
+                int x1 = (std::min)(x0 + 1, srcRes - 1);
+                float tx = fx - static_cast<float>(x0);
+
+                float v00 = src[static_cast<size_t>(z0) * srcRes + x0];
+                float v10 = src[static_cast<size_t>(z0) * srcRes + x1];
+                float v01 = src[static_cast<size_t>(z1) * srcRes + x0];
+                float v11 = src[static_cast<size_t>(z1) * srcRes + x1];
+                float v0 = v00 + (v10 - v00) * tx;
+                float v1 = v01 + (v11 - v01) * tx;
+                dst[static_cast<size_t>(z) * dstRes + x] = v0 + (v1 - v0) * tz;
+            }
+        }
+    }
+
+    void kTerrain::resizeWeightData(int newHeightRes)
+    {
+        if (newHeightRes < 2 || newHeightRes == m_heightRes)
+            return;
+
+        const int oldRes = m_heightRes;
+        const int L = kMaxTerrainLayers;
+        const std::vector<unsigned char> src = m_weightData;
+        std::vector<unsigned char> dst(static_cast<size_t>(newHeightRes) * newHeightRes * L, 0);
+
+        for (int z = 0; z < newHeightRes; ++z)
+        {
+            float fz = (static_cast<float>(z) / static_cast<float>(newHeightRes - 1)) *
+                       static_cast<float>(oldRes - 1);
+            int z0 = (std::min)(static_cast<int>(fz), oldRes - 1);
+            int z1 = (std::min)(z0 + 1, oldRes - 1);
+            float tz = fz - static_cast<float>(z0);
+            for (int x = 0; x < newHeightRes; ++x)
+            {
+                float fx = (static_cast<float>(x) / static_cast<float>(newHeightRes - 1)) *
+                           static_cast<float>(oldRes - 1);
+                int x0 = (std::min)(static_cast<int>(fx), oldRes - 1);
+                int x1 = (std::min)(x0 + 1, oldRes - 1);
+                float tx = fx - static_cast<float>(x0);
+
+                size_t d = (static_cast<size_t>(z) * newHeightRes + x) * L;
+                for (int c = 0; c < L; ++c)
+                {
+                    float v00 = src[(static_cast<size_t>(z0) * oldRes + x0) * L + c];
+                    float v10 = src[(static_cast<size_t>(z0) * oldRes + x1) * L + c];
+                    float v01 = src[(static_cast<size_t>(z1) * oldRes + x0) * L + c];
+                    float v11 = src[(static_cast<size_t>(z1) * oldRes + x1) * L + c];
+                    float v0 = v00 + (v10 - v00) * tx;
+                    float v1 = v01 + (v11 - v01) * tx;
+                    float v = v0 + (v1 - v0) * tz;
+                    dst[d + c] = static_cast<unsigned char>(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v));
+                }
+            }
+        }
+
+        m_weightData.swap(dst);
+    }
+
+    void kTerrain::resizeHeightData(int newHeightRes)
+    {
+        if (newHeightRes < 2 || newHeightRes == m_heightRes)
+            return;
+
+        const int oldRes = m_heightRes;
+        const float worldSize = m_sampleSpacing * static_cast<float>(oldRes - 1);
+
+        // Must run while m_heightRes still holds the old resolution.
+        resizeWeightData(newHeightRes);
+
+        const std::vector<float> oldBase = m_baseHeightData;
+        m_heightRes = newHeightRes;
+        m_sampleSpacing = worldSize / static_cast<float>(newHeightRes - 1);
+
+        std::vector<float> newBase;
+        resampleHeightField(oldBase, oldRes, worldSize, newBase, newHeightRes);
+        m_baseHeightData.swap(newBase);
+
+        for (auto &layer : m_heightLayers)
+        {
+            if (layer.offsets.empty())
+            {
+                layer.offsets.assign(static_cast<size_t>(newHeightRes) * newHeightRes, 0.0f);
+                continue;
+            }
+            std::vector<float> newOffsets;
+            resampleHeightField(layer.offsets, oldRes, worldSize, newOffsets, newHeightRes);
+            layer.offsets.swap(newOffsets);
+        }
+
+        m_heightData.assign(static_cast<size_t>(newHeightRes) * newHeightRes, 0.0f);
+        recomposeHeight();
+    }
+
+    void kTerrain::setWorldSize(float worldSize)
+    {
+        if (worldSize <= 0.0f)
+            return;
+
+        m_worldSize = worldSize;
+        m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
+
+        if (m_terrainMaterial)
+            m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
+
+        if (m_mesh)
+            m_mesh->setPosition(getWorldPosition());
+
+        if (m_loaded)
+            updateMesh();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Internally owned assets
+    // ---------------------------------------------------------------------------
+
+    void kTerrain::createOwnedAssets(const kString &dataDir)
+    {
+        if (dataDir.empty())
+            return;
+
+        std::error_code ec;
+        std::filesystem::path dir(dataDir);
+        std::filesystem::create_directories(dir, ec);
+
+        kString uuid = m_mesh ? m_mesh->getUuid() : kString();
+        if (uuid.empty())
+            uuid = "terrain_" + std::to_string(m_gridX) + "_" + std::to_string(m_gridZ);
+
+        m_heightFilePath = (dir / (uuid + ".height")).string();
+        m_splatFilePath = (dir / (uuid + ".splat")).string();
+        m_heightLayersFilePath = (dir / (uuid + ".hlayers")).string();
+        m_materialFilePath = (dir / (uuid + ".mat")).string();
+
+        // First creation only, and only once the mesh (and therefore the UUID the
+        // filenames derive from) exists. An existing payload is left untouched so
+        // that a project load — which assigns paths before reading them back —
+        // can never clobber the saved terrain with a freshly zeroed one.
+        if (m_mesh && !std::filesystem::exists(m_heightFilePath))
+            saveOwnedAssets();
+    }
+
+    void kTerrain::adoptOwnedAssetPaths(const kString &heightFile, const kString &splatFile,
+                                        const kString &heightLayersFile,
+                                        const kString &materialFile)
+    {
+        if (!heightFile.empty())
+            m_heightFilePath = heightFile;
+        if (!splatFile.empty())
+            m_splatFilePath = splatFile;
+        if (!heightLayersFile.empty())
+            m_heightLayersFilePath = heightLayersFile;
+        if (!materialFile.empty())
+            m_materialFilePath = materialFile;
+    }
+
+    void kTerrain::destroyOwnedAssets()
+    {
+        std::error_code ec;
+        const kString *paths[4] = {&m_heightFilePath, &m_splatFilePath,
+                                   &m_heightLayersFilePath, &m_materialFilePath};
+        for (const kString *p : paths)
+            if (!p->empty())
+                std::filesystem::remove(*p, ec);
+
+        m_heightFilePath.clear();
+        m_splatFilePath.clear();
+        m_heightLayersFilePath.clear();
+        m_materialFilePath.clear();
+    }
+
+    void kTerrain::saveOwnedAssets()
+    {
+        if (m_heightFilePath.empty())
+            return;
+
+        saveHeightData(m_heightFilePath);
+        saveSplatMap(m_splatFilePath);
+
+        // Height modifier offsets: too large for JSON, so a compact binary blob
+        // (count-prefixed per layer) alongside a matching entry in the tile JSON.
+        if (!m_heightLayersFilePath.empty())
+        {
+            std::ofstream file(m_heightLayersFilePath, std::ios::binary);
+            if (file.is_open())
+            {
+                const int32_t count = static_cast<int32_t>(m_heightLayers.size());
+                file.write(reinterpret_cast<const char *>(&count), sizeof(count));
+                for (const auto &layer : m_heightLayers)
+                {
+                    const int32_t n = static_cast<int32_t>(layer.offsets.size());
+                    file.write(reinterpret_cast<const char *>(&n), sizeof(n));
+                    if (n > 0)
+                        file.write(reinterpret_cast<const char *>(layer.offsets.data()),
+                                   static_cast<std::streamsize>(n) * sizeof(float));
+                }
+                file.close();
+            }
+        }
+
+        // The tile's material: a self-describing .mat holding the TerrainPBR
+        // parameters.  It is created and deleted with the tile, never assigned
+        // by hand.
+        if (!m_materialFilePath.empty())
+        {
+            json matJson;
+            matJson["name"] = m_mesh ? m_mesh->getName() : kString("Terrain");
+            matJson["shader"] = "TerrainPBR";
+            matJson["owned_by_terrain"] = true;
+            matJson["world_size"] = m_worldSize;
+
+            if (m_terrainMaterial)
+            {
+                const kVec3 diffuse = m_terrainMaterial->getDiffuseColor();
+                matJson["diffuse"] = {diffuse.x, diffuse.y, diffuse.z};
+                matJson["metallic"] = m_terrainMaterial->getMetallic();
+                matJson["roughness"] = m_terrainMaterial->getRoughness();
+
+                json paramsJson = json::object();
+                for (const auto &kv : m_terrainMaterial->getParams())
+                    if (kv.second.type == kMaterialParamType::FLOAT)
+                        paramsJson[kv.first] = kv.second.value.x;
+                matJson["params"] = paramsJson;
+            }
+
+            std::ofstream file(m_materialFilePath);
+            if (file.is_open())
+            {
+                file << matJson.dump(2);
+                file.close();
+            }
+        }
+    }
+
+    void kTerrain::loadOwnedAssets()
+    {
+        if (!m_heightFilePath.empty() && std::filesystem::exists(m_heightFilePath))
+            loadHeightData(m_heightFilePath);
+
+        if (!m_splatFilePath.empty() && std::filesystem::exists(m_splatFilePath))
+            loadSplatMap(m_splatFilePath);
+
+        if (!m_heightLayersFilePath.empty() && std::filesystem::exists(m_heightLayersFilePath))
+        {
+            std::ifstream file(m_heightLayersFilePath, std::ios::binary);
+            if (file.is_open())
+            {
+                int32_t count = 0;
+                file.read(reinterpret_cast<char *>(&count), sizeof(count));
+                if (count >= 0)
+                {
+                    m_heightLayers.resize(static_cast<size_t>(count));
+                    for (auto &layer : m_heightLayers)
+                    {
+                        int32_t n = 0;
+                        file.read(reinterpret_cast<char *>(&n), sizeof(n));
+                        layer.offsets.assign(n > 0 ? static_cast<size_t>(n) : 0, 0.0f);
+                        if (n > 0)
+                            file.read(reinterpret_cast<char *>(layer.offsets.data()),
+                                      static_cast<std::streamsize>(n) * sizeof(float));
+                    }
+                }
+                file.close();
+            }
+        }
+
+        if (!m_materialFilePath.empty() && std::filesystem::exists(m_materialFilePath))
+        {
+            std::ifstream file(m_materialFilePath);
+            if (file.is_open())
+            {
+                json matJson;
+                try
+                {
+                    file >> matJson;
+                }
+                catch (...)
+                {
+                    matJson = json::object();
+                }
+                file.close();
+
+                if (m_terrainMaterial && matJson.contains("params"))
+                {
+                    for (auto it = matJson["params"].begin(); it != matJson["params"].end(); ++it)
+                        if (it.value().is_number())
+                            m_terrainMaterial->setParamFloat(it.key(), it.value().get<float>());
+                }
+            }
+        }
+
+        recomposeHeight();
     }
 
     // ---------------------------------------------------------------------------
@@ -930,7 +1531,10 @@ namespace kemena
             m_terrainMaterial->setParamFloat("u_Stochastic", 1.0f);
             m_terrainMaterial->setParamFloat("u_TriplanarStrength", 0.75f);
             m_terrainMaterial->setParamFloat("u_TriplanarSharpness", 3.0f);
-            m_terrainMaterial->setParamFloat("u_NoiseVariegation", 0.25f);
+            // No noise variegation out of the box: until the operator assigns
+            // layer textures the terrain should read as plain neutral white
+            // rather than a tinted procedural surface.
+            m_terrainMaterial->setParamFloat("u_NoiseVariegation", 0.0f);
             m_terrainMaterial->setParamFloat("u_NoiseScale", 0.02f);
             // Masked blending is off until a layer albedo carries an alpha mask.
             m_terrainMaterial->setParamFloat("u_MaskedBlend", 0.0f);
@@ -988,6 +1592,48 @@ namespace kemena
                 kString tn = "u_Tiling[" + std::to_string(l) + "]";
                 if (!mat->hasParam(tn))
                     mat->setParamFloat(tn, 16.0f);
+            }
+
+            // The legacy 4-layer splat path samples u_AlbedoMap[0..3] and friends.
+            // When no layer textures are assigned those samplers would be left
+            // unbound, so the terrain showed whatever texture happened to be bound
+            // last (which is why a freshly created tile came out red). Bind neutral
+            // 1x1 maps so an untextured terrain renders plain white.
+            if (m_albedoArray == 0)
+            {
+                static uint32_t s_whiteTex = 0;
+                static uint32_t s_flatNormalTex = 0;
+                static uint32_t s_blackTex = 0;
+                static bool s_neutralReady = false;
+
+                if (!s_neutralReady)
+                {
+                    s_whiteTex = makeSolidTexture(255, 255, 255, 255);
+                    s_flatNormalTex = makeSolidTexture(128, 128, 255, 255);
+                    s_blackTex = makeSolidTexture(0, 0, 0, 255);
+                    s_neutralReady = true;
+                }
+
+                auto bindNeutral = [&](const kString &name, uint32_t id)
+                {
+                    if (id == 0)
+                        return;
+                    kTexture *t = new kTexture();
+                    t->setTextureID(id);
+                    t->setTextureName(name);
+                    t->setType(kTextureType::TEX_TYPE_2D);
+                    mat->setParamSampler2D(name, t);
+                };
+
+                for (int i = 0; i < 4; ++i)
+                {
+                    const kString si = "[" + std::to_string(i) + "]";
+                    bindNeutral("u_AlbedoMap" + si, s_whiteTex);
+                    bindNeutral("u_NormalMap" + si, s_flatNormalTex);
+                    bindNeutral("u_RoughnessMap" + si, s_whiteTex);
+                    bindNeutral("u_MetalnessMap" + si, s_blackTex);
+                    bindNeutral("u_AOMap" + si, s_whiteTex);
+                }
             }
         }
 
@@ -1103,6 +1749,14 @@ namespace kemena
             m_mesh = nullptr;
         }
 
+        // The terrain material is owned by the tile (nobody else may replace it),
+        // so it dies with the mesh.
+        if (m_terrainMaterial)
+        {
+            delete m_terrainMaterial;
+            m_terrainMaterial = nullptr;
+        }
+
         m_loaded = false;
     }
 
@@ -1132,10 +1786,24 @@ namespace kemena
         }
         j["layers"] = layersJson;
 
+        // Non-destructive height modifiers: parameters here, offsets in .hlayers.
+        json hlJson = json::array();
+        for (const auto &layer : m_heightLayers)
+        {
+            json lj;
+            layer.serialize(lj);
+            hlJson.push_back(lj);
+        }
+        j["heightLayers"] = hlJson;
+
         // Use mesh UUID for filenames so terrain data is linked to the scene object
         kString uuid = m_mesh ? m_mesh->getUuid() : "terrain_" + std::to_string(m_gridX) + "_" + std::to_string(m_gridZ);
         j["heightFile"] = uuid + ".height";
         j["splatFile"] = uuid + ".splat";
+        j["heightLayersFile"] = uuid + ".hlayers";
+        j["materialFile"] = uuid + ".mat";
+        // Terrain assets are owned by the tile: never user-assignable.
+        j["ownedAssets"] = true;
     }
 
     void kTerrain::deserialize(const json &j)
@@ -1150,11 +1818,12 @@ namespace kemena
             m_heightRes = j["heightRes"].get<int>();
 
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
-        m_heightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes, 0.0f);
-        m_weightData.resize(static_cast<size_t>(m_heightRes) * m_heightRes * kMaxTerrainLayers, 0);
+        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
+        m_heightData.assign(pixels, 0.0f);
+        m_baseHeightData.assign(pixels, 0.0f);
+        m_weightData.assign(pixels * kMaxTerrainLayers, 0);
 
         // Default: layer 0 fully covers the tile until a weight map is loaded.
-        const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;
         for (size_t i = 0; i < pixels; ++i)
             m_weightData[i * kMaxTerrainLayers + 0] = 255;
 
@@ -1166,6 +1835,20 @@ namespace kemena
                 kTerrainLayer layer;
                 layer.deserialize(lj);
                 m_layers.push_back(layer);
+            }
+        }
+
+        // Height modifier parameters.  The offsets themselves live in the
+        // .hlayers payload and are restored by loadOwnedAssets().
+        if (j.contains("heightLayers"))
+        {
+            m_heightLayers.resize(j["heightLayers"].size());
+            size_t index = 0;
+            for (const auto &lj : j["heightLayers"])
+            {
+                m_heightLayers[index].deserialize(lj);
+                m_heightLayers[index].offsets.clear();
+                ++index;
             }
         }
     }
@@ -1187,6 +1870,9 @@ namespace kemena
         m_assetManager = assetManager;
         m_worldSize = worldSize;
         m_heightRes = heightRes;
+
+        // Tiles may already exist (init() is also called when a world reloads).
+        adoptAssetDirectory();
     }
 
     void kTerrainManager::update(const kVec3 &playerPos, float loadRadius, float unloadRadius)
@@ -1282,8 +1968,57 @@ namespace kemena
 
         kTerrain *ptr = terrain.get();
         m_tiles[key] = std::move(terrain);
+
+        // Every tile owns its height / splat / height-layer / material files.
+        if (!m_assetDirectory.empty())
+            ptr->createOwnedAssets(m_assetDirectory);
+
         updateNeighbors();
         return ptr;
+    }
+
+    void kTerrainManager::setAssetDirectory(const kString &directory)
+    {
+        m_assetDirectory = directory;
+        adoptAssetDirectory();
+    }
+
+    void kTerrainManager::adoptAssetDirectory()
+    {
+        if (m_assetDirectory.empty())
+            return;
+
+        for (auto &pair : m_tiles)
+            if (pair.second)
+                pair.second->createOwnedAssets(m_assetDirectory);
+    }
+
+    void kTerrainManager::resizeAllTiles(float worldSize, int heightRes)
+    {
+        if (worldSize <= 0.0f || heightRes < 2)
+            return;
+
+        m_worldSize = worldSize;
+        m_heightRes = heightRes;
+
+        for (auto &pair : m_tiles)
+        {
+            kTerrain *tile = pair.second.get();
+            if (!tile)
+                continue;
+
+            tile->resizeHeightData(heightRes);
+            tile->setWorldSize(worldSize);
+
+            if (tile->isLoaded())
+                tile->rebuildMesh(true);
+
+            // Persist the resampled payload straight away so a crash cannot leave
+            // the on-disk terrain at the old resolution.
+            tile->saveOwnedAssets();
+        }
+
+        updateNeighbors();
     }
 
     bool kTerrainManager::removeTile(int gridX, int gridZ)
@@ -1294,6 +2029,8 @@ namespace kemena
         if (it == m_tiles.end())
             return false;
 
+        // Deleting a tile deletes the assets it owns.
+        it->second->destroyOwnedAssets();
         it->second->unload();
         m_loadedTiles.erase(key);
         m_tiles.erase(it);
