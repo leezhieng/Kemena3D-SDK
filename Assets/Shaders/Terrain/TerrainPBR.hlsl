@@ -150,6 +150,7 @@ SamplerComparisonState s_Shadow  : register(s1);
 
 // Uniforms
 float u_Tiling[4];
+float u_MaskChannel[4]; // Per-layer splat-mask channel (0..3 = R/G/B/A)
 float u_BlendSharpness;
 
 struct PS_INPUT
@@ -305,7 +306,12 @@ float3 computeDisplacedNormal(float3 worldPos)
 {
     float3 dx = ddx(worldPos);
     float3 dy = ddy(worldPos);
-    return normalize(cross(dx, dy));
+    float3 n = normalize(cross(dx, dy));
+    // Heightfield normals always point up (no overhangs); the derivative cross
+    // product's handedness flipped the relief shading, so force the +Y hemisphere.
+    if (n.y < 0.0)
+        n = -n;
+    return n;
 }
 
 float3 perturbNormal(float3 normalMapSample, float3 T, float3 B, float3 N)
@@ -330,7 +336,8 @@ float4 mainPS(PS_INPUT input) : SV_TARGET
 
     for (int i = 0; i < 4; i++)
     {
-        float weight = splat[i];
+        int mc = (int)clamp(u_MaskChannel[i], 0.0, 3.0);
+        float weight = splat[mc];
         if (weight <= 0.001)
             continue;
 

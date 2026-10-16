@@ -155,6 +155,7 @@ namespace kemena
         j["normalPath"] = normalPath;
         j["ormPath"] = ormPath;
         j["maskPath"] = maskPath;
+        j["maskChannel"] = maskChannel;
     }
 
     void kTerrainLayer::deserialize(const json &j)
@@ -179,6 +180,8 @@ namespace kemena
             ormPath = j["ormPath"].get<kString>();
         if (j.contains("maskPath"))
             maskPath = j["maskPath"].get<kString>();
+        if (j.contains("maskChannel"))
+            maskChannel = j["maskChannel"].get<int>();
     }
 
     // ============================================================================
@@ -445,6 +448,25 @@ namespace kemena
         build(m_normalArray, 1, nrm, false);
         build(m_ormArray,    2, orm, false);
         build(m_maskArray,   3, mask, false);
+    }
+
+    void kTerrain::syncLayerMaskChannels()
+    {
+        if (!m_mesh)
+            return;
+        kMaterial *mat = m_mesh->getMaterial();
+        if (!mat)
+            return;
+
+        for (int l = 0; l < kMaxTerrainLayers; ++l)
+        {
+            // -1 ("auto") falls back to the layer's own index, which is the legacy
+            // behaviour (layer i uses channel i of the RGBA splat map).
+            float ch = static_cast<float>(l);
+            if (l < static_cast<int>(m_layers.size()) && m_layers[l].maskChannel >= 0)
+                ch = static_cast<float>(m_layers[l].maskChannel);
+            mat->setParamFloat("u_MaskChannel[" + std::to_string(l) + "]", ch);
+        }
     }
 
     void kTerrain::rebuildLayerArrays()
@@ -1593,6 +1615,9 @@ namespace kemena
                 if (!mat->hasParam(tn))
                     mat->setParamFloat(tn, 16.0f);
             }
+
+            // Per-layer splat-mask channel (R/G/B/A) for this tile's layers.
+            syncLayerMaskChannels();
 
             // The legacy 4-layer splat path samples u_AlbedoMap[0..3] and friends.
             // When no layer textures are assigned those samplers would be left

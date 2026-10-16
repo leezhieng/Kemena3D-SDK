@@ -128,6 +128,7 @@ uniform sampler2D u_RoughnessMap[4];   // 4 roughness maps
 uniform sampler2D u_MetalnessMap[4];   // 4 metallic maps
 uniform sampler2D u_AOMap[4];          // 4 AO maps
 uniform float     u_Tiling[4];         // Per-layer UV tiling scale
+uniform float     u_MaskChannel[4];    // Per-layer splat-mask channel (0..3 = R/G/B/A)
 uniform float     u_BlendSharpness;    // Blend edge sharpness (0.5 - 4.0)
 
 // ===========================================================================
@@ -293,7 +294,14 @@ vec3 computeDisplacedNormal(vec3 worldPos)
 {
     vec3 dx = dFdx(worldPos);
     vec3 dy = dFdy(worldPos);
-    return normalize(cross(dx, dy));
+    vec3 n = normalize(cross(dx, dy));
+    // Terrain is a heightfield with no overhangs, so its geometric normal always
+    // points up. The cross product's handedness depends on the window-space axes,
+    // which flipped the relief shading (slopes facing the sun read dark) — force
+    // the normal into the +Y hemisphere.
+    if (n.y < 0.0)
+        n = -n;
+    return n;
 }
 
 // ===========================================================================
@@ -315,7 +323,7 @@ void main()
     // ----- Per-layer sampling -----------------------------------------------
     for (int i = 0; i < 4; i++)
     {
-        float weight = splat[i];
+        float weight = splat[int(clamp(u_MaskChannel[i], 0.0, 3.0))];
         if (weight <= 0.001)
             continue;
 

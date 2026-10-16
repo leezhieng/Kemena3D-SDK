@@ -871,6 +871,8 @@ namespace kemena
                   {"z", physicsDesc.shape.offset.z}}},
                 {"radius",          physicsDesc.shape.radius},
                 {"height",          physicsDesc.shape.height},
+                // HeightField (terrain) collider resolution — samples per side.
+                {"collision_resolution", physicsDesc.shape.heightSampleCount},
                 {"body_type",       (int)physicsDesc.type},
                 {"mass",            physicsDesc.mass},
                 {"friction",        physicsDesc.friction},

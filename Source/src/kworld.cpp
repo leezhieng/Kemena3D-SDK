@@ -546,6 +546,10 @@ namespace kemena
                 // HeightField (terrain): build the sample grid from the tile mesh's
                 // vertex Y values. Works at any LOD because the grid side is derived
                 // from the (square) vertex count rather than assumed to be full-res.
+                // The descriptor may request a different collider resolution
+                // (shape.heightSampleCount, written by the editor): the grid is then
+                // bilinearly resampled to it, so a higher value gives a finer — and
+                // more accurate — collision mesh.
                 else if (desc.shape.type == kPhysicsShapeType::HeightField)
                 {
                     if (node->getType() == NODE_TYPE_MESH)
@@ -556,15 +560,44 @@ namespace kemena
                         int g = static_cast<int>(std::lround(std::sqrt(static_cast<double>(n))));
                         if (g >= 2 && static_cast<size_t>(g) * g == n)
                         {
-                            desc.shape.heightSamples.resize(n);
-                            for (size_t i = 0; i < n; ++i)
-                                desc.shape.heightSamples[i] = verts[i].y;
-                            desc.shape.heightSampleCount = g;
+                            int target = desc.shape.heightSampleCount;
+                            if (target < 2 || target > 4096)
+                                target = g;
+
+                            desc.shape.heightSamples.resize(static_cast<size_t>(target) * target);
+                            for (int z = 0; z < target; ++z)
+                            {
+                                const float fz = (target > 1)
+                                                     ? (static_cast<float>(z) / (target - 1)) * (g - 1)
+                                                     : 0.0f;
+                                const int z0 = static_cast<int>(fz);
+                                const int z1 = (std::min)(z0 + 1, g - 1);
+                                const float tz = fz - static_cast<float>(z0);
+                                for (int x = 0; x < target; ++x)
+                                {
+                                    const float fx = (target > 1)
+                                                         ? (static_cast<float>(x) / (target - 1)) * (g - 1)
+                                                         : 0.0f;
+                                    const int x0 = static_cast<int>(fx);
+                                    const int x1 = (std::min)(x0 + 1, g - 1);
+                                    const float tx = fx - static_cast<float>(x0);
+
+                                    const float h00 = verts[static_cast<size_t>(z0) * g + x0].y;
+                                    const float h10 = verts[static_cast<size_t>(z0) * g + x1].y;
+                                    const float h01 = verts[static_cast<size_t>(z1) * g + x0].y;
+                                    const float h11 = verts[static_cast<size_t>(z1) * g + x1].y;
+                                    const float h0 = h00 + (h10 - h00) * tx;
+                                    const float h1 = h01 + (h11 - h01) * tx;
+                                    desc.shape.heightSamples[static_cast<size_t>(z) * target + x] =
+                                        h0 + (h1 - h0) * tz;
+                                }
+                            }
+                            desc.shape.heightSampleCount = target;
 
                             float world = m->getTerrainWorldSize();
                             if (world <= 0.0f)
                                 world = 256.0f;
-                            float spacing = world / static_cast<float>(g - 1);
+                            float spacing = world / static_cast<float>(target - 1);
                             float half = world * 0.5f;
                             desc.shape.heightScale = kVec3(spacing, 1.0f, spacing);
                             // The mesh is centred on the tile origin, so sample (0,0)
@@ -988,6 +1021,8 @@ namespace kemena
             }
             d.shape.radius   = phys.value("radius", 0.5f);
             d.shape.height   = phys.value("height", 1.0f);
+            // HeightField collider resolution requested by the editor (0 = auto).
+            d.shape.heightSampleCount = phys.value("collision_resolution", 0);
             d.type           = (kPhysicsObjectType)phys.value("body_type", 0);
             d.mass           = phys.value("mass", 1.0f);
             d.friction       = phys.value("friction", 0.5f);

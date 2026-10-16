@@ -60,6 +60,10 @@ namespace kemena
         kString ormPath;               ///< ORM image (R=AO, G=Roughness, B=Metallic) -> u_ORMArray.
         kString maskPath;              ///< Masked-blend mask image -> u_MaskArray[layer].
 
+        /// Which RGBA channel of the terrain splat map masks this layer:
+        /// 0 = R, 1 = G, 2 = B, 3 = A, -1 = "auto" (use the layer's own index).
+        int maskChannel = -1;
+
         void serialize(json &j) const;
         void deserialize(const json &j);
     };
@@ -343,6 +347,16 @@ namespace kemena
         /** @brief Returns the list of terrain material layers. */
         const std::vector<kTerrainLayer> &getLayers() const { return m_layers; }
         std::vector<kTerrainLayer> &getLayers() { return m_layers; }
+
+        /**
+         * @brief Uploads the per-layer splat-mask channel selection to the material.
+         *
+         * Writes `u_MaskChannel[l]` (0..3 = R/G/B/A) for every layer from
+         * @ref kTerrainLayer::maskChannel, where -1 ("auto") falls back to the
+         * layer's own index. Call after editing the layers so the shader picks the
+         * change up.
+         */
+        void syncLayerMaskChannels();
 
         /**
          * @brief Sets the material for a specific layer.
