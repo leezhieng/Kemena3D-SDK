@@ -306,6 +306,8 @@ namespace kemena
         void setVertexAttribInt(int location, int components, int stride, size_t offset) override;
         void setVertexAttribDivisor(int location, int divisor) override;
 
+        bool usesRowMajorMatrixAttributes() const override { return true; }
+
         // --- Draw calls ------------------------------------------------------
         void drawIndexed(uint32_t vaoId, int indexCount) override;
         void drawIndexedInstanced(uint32_t vaoId, int indexCount, int instanceCount) override;

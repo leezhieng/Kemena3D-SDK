@@ -159,6 +159,15 @@ namespace kemena
          */
         uint32_t getShaderProgram();
 
+        /**
+         * @brief Returns whether the shader source opts into hardware instancing.
+         *
+         * Detected by the presence of the `useInstancing` toggle in the vertex
+         * stage. The renderer only batches meshes whose material shader supports
+         * instancing; custom shaders without it keep their per-object draws.
+         */
+        bool getSupportsInstancing() const { return supportsInstancing; }
+
         /** @brief Sets a kMat4 array uniform. */
         void setValue(kString name, std::vector<kMat4> value);
         /** @brief Sets a float array uniform (e.g. morph target weights). */
@@ -183,6 +192,7 @@ namespace kemena
     protected:
     private:
         uint32_t shaderProgram = 0; ///< Compiled program handle; 0 until loaded.
+        bool supportsInstancing = false; ///< True when the vertex stage uses per-instance matrices.
     };
 }
 

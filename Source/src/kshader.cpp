@@ -91,11 +91,14 @@ namespace kemena
             fragSrc = fragStr.c_str();
         }
 
+        supportsInstancing = vertStr.find("useInstancing") != kString::npos;
         shaderProgram = kDriver::getCurrent()->compileShaderProgram(vertSrc, fragSrc);
     }
 
     void kShader::loadShadersCode(const char *vertexShaderCode, const char *fragmentShaderCode)
     {
+        supportsInstancing = vertexShaderCode != nullptr &&
+                             kString(vertexShaderCode).find("useInstancing") != kString::npos;
         shaderProgram = kDriver::getCurrent()->compileShaderProgram(vertexShaderCode, fragmentShaderCode);
     }
 
@@ -109,6 +112,7 @@ namespace kemena
     void kShader::loadGlslCode(const kString& src)
     {
         kShaderSource s = splitSource(src);
+        supportsInstancing = s.vertex.find("useInstancing") != kString::npos;
         shaderProgram = kDriver::getCurrent()->compileShaderProgram(
             s.vertex.empty()   ? nullptr : s.vertex.c_str(),
             s.fragment.empty() ? nullptr : s.fragment.c_str());
@@ -199,6 +203,8 @@ namespace kemena
 
     void kShader::loadHlslCodeDX11(const kString& src)
     {
+        supportsInstancing = src.find("useInstancing") != kString::npos;
+
         // HLSL is handed to the driver untouched — the engine never translates
         // shader source.  The D3D11 driver compiles vs_5_0 / ps_5_0 with the entry
         // points VSMain / PSMain ("main" as a fallback).

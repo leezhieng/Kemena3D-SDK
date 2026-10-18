@@ -37,6 +37,8 @@ namespace kemena
             driver->deleteBuffer(boneIDBuffer);
         if (weightBuffer)
             driver->deleteBuffer(weightBuffer);
+        if (instanceMatrixBuffer)
+            driver->deleteBuffer(instanceMatrixBuffer);
 
         for (uint32_t b : morphPositionBuffers)
             if (b)
@@ -610,6 +612,66 @@ namespace kemena
         kDriver::getCurrent()->drawIndexed(vao, (int)indices.size());
     }
 
+    void kMesh::setHardwareInstanced(bool enabled, const kString &key)
+    {
+        hwInstanced = enabled;
+        instanceKey = enabled ? key : kString();
+    }
+
+    void kMesh::drawInstanced(const std::vector<kMat4> &instanceMatrices)
+    {
+        if (vao == 0 || indices.empty() || instanceMatrices.empty())
+            return;
+
+        kDriver *driver = kDriver::getCurrent();
+        if (driver == nullptr)
+            return;
+
+        // D3D11 consumes row-major matrices while GLM stores column-major, so
+        // the per-instance stream must be transposed for the D3D backend.
+        const kMat4 *uploadData = instanceMatrices.data();
+        std::vector<kMat4> transposed;
+        if (driver->usesRowMajorMatrixAttributes())
+        {
+            transposed.resize(instanceMatrices.size());
+            for (size_t i = 0; i < instanceMatrices.size(); ++i)
+                transposed[i] = glm::transpose(instanceMatrices[i]);
+            uploadData = transposed.data();
+        }
+
+        const size_t bytes = instanceMatrices.size() * sizeof(kMat4);
+        if (instanceMatrixBuffer == 0)
+            instanceMatrixBuffer = driver->createBuffer();
+
+        if (bytes > instanceMatrixCapacity)
+        {
+            driver->uploadVertexBuffer(instanceMatrixBuffer, uploadData, bytes);
+            instanceMatrixCapacity = bytes;
+        }
+        else
+        {
+            driver->updateBufferSubData(instanceMatrixBuffer, uploadData, bytes, 0);
+        }
+
+        // Locations 8..11 hold the four columns of the per-instance model matrix.
+        // They must stay inside 0..15: OpenGL only guarantees 16 vertex attribute
+        // slots, and enabling location 16+ is invalid on drivers that report 16 —
+        // which silently turned every instance matrix into the generic default and
+        // made all hardware-instanced meshes (e.g. prefab characters) disappear.
+        driver->bindVertexArray(vao);
+        for (int row = 0; row < 4; ++row)
+        {
+            const int location = 8 + row;
+            driver->setVertexAttribFloat(location, 4, sizeof(kMat4),
+                                         (size_t)row * sizeof(float) * 4);
+            driver->setVertexAttribDivisor(location, 1);
+        }
+        driver->unbindVertexArray();
+
+        driver->drawIndexedInstanced(vao, (int)indices.size(),
+                                     (int)instanceMatrices.size());
+    }
+
     json kMesh::serialize()
     {
         // Delegate to the base so transform, children, scripts (full format),
@@ -632,6 +694,11 @@ namespace kemena
         data["reference"] = getRefName();
         data["cast_shadow"] = getCastShadow();
         data["receive_shadow"] = getReceiveShadow();
+        if (hwInstanced)
+        {
+            data["hardware_instanced"] = true;
+            data["instance_key"] = instanceKey;
+        }
         if (!primitiveType.empty())
             data["primitive"] = primitiveType;
         // Terrain tiles embed their metadata so loadObjectFromJson can

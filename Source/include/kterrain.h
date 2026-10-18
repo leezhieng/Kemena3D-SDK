@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <functional>
@@ -46,7 +47,8 @@ namespace kemena
     {
         kString name;                  ///< Display name (e.g. "Grass", "Rock", "Snow").
         kMaterial *material = nullptr; ///< Material asset for this layer (owned externally).
-        float tileSize = 1.0f;         ///< World-space size of one texture repeat.
+        float tiling = 16.0f;          ///< Texture repeats across the tile (u_Tiling[layer]).
+        float tileSize = 1.0f;         ///< Legacy, unused; kept so old payloads still load.
         float minHeight = 0.0f;        ///< Minimum height (world units) where this layer appears.
         float maxHeight = 1.0f;        ///< Maximum height (world units) where this layer appears.
         float slopeMin = 0.0f;         ///< Minimum slope angle in degrees for this layer.
@@ -60,8 +62,8 @@ namespace kemena
         kString ormPath;               ///< ORM image (R=AO, G=Roughness, B=Metallic) -> u_ORMArray.
         kString maskPath;              ///< Masked-blend mask image -> u_MaskArray[layer].
 
-        /// Which RGBA channel of the terrain splat map masks this layer:
-        /// 0 = R, 1 = G, 2 = B, 3 = A, -1 = "auto" (use the layer's own index).
+        /// Which layer's painted weight masks this layer (0..15), or -1 = "auto"
+        /// (the layer's own weight). Uploaded as TerrainPBR's `u_MaskChannel[l]`.
         int maskChannel = -1;
 
         void serialize(json &j) const;
@@ -351,12 +353,20 @@ namespace kemena
         /**
          * @brief Uploads the per-layer splat-mask channel selection to the material.
          *
-         * Writes `u_MaskChannel[l]` (0..3 = R/G/B/A) for every layer from
-         * @ref kTerrainLayer::maskChannel, where -1 ("auto") falls back to the
-         * layer's own index. Call after editing the layers so the shader picks the
-         * change up.
+         * Writes `u_MaskChannel[l]` (a layer index 0..15, or -1 for "auto" = the
+         * layer's own weight) for every layer. Call after editing the layers so the
+         * shader picks the change up.
          */
         void syncLayerMaskChannels();
+
+        /**
+         * @brief Uploads each material layer's own tiling to `u_Tiling[0..15]`.
+         *
+         * Tiling is a per-layer property (@ref kTerrainLayer::tiling), so call this
+         * after editing a layer's tiling or after adding a layer. Layers that do not
+         * exist keep the material's default of 16 repeats.
+         */
+        void syncLayerTiling();
 
         /**
          * @brief Sets the material for a specific layer.
@@ -488,7 +498,13 @@ namespace kemena
          * from geometry, and uploads to GPU.  No height map texture or vertex
          * shader displacement is used — the polygon data carries the height.
          *
-         * @param stitchNeighbors If true, adjusts edge vertices to match neighbor heights.
+         * @param stitchNeighbors If true, the west/south boundary samples are
+         *        taken from the matching neighbor tile so adjacent tiles share
+         *        exactly the same edge positions (watertight seams). The rule is
+         *        one-directional and deterministic (a tile copies from its
+         *        west/south neighbor, its east/north edges keep their own
+         *        values), which makes every shared edge — corners included —
+         *        evaluate to the same value on both sides.
          */
         void rebuildMesh(bool stitchNeighbors = true);
 
@@ -575,6 +591,23 @@ namespace kemena
         /** @brief Returns the height sample at (x, z) with neighbor stitching applied. */
         float getStitchedHeight(int x, int z) const;
 
+        /**
+         * @brief Composite height (base + modifier layers) at a sample, ignoring any
+         *        seam stitching. Used as the authoritative source when two tiles
+         *        agree on a shared edge value.
+         */
+        float rawCompositeHeight(int x, int z) const;
+
+        /**
+         * @brief Makes this tile's west/south boundary samples match its neighbors.
+         *
+         * Only west and south boundaries are written (the east/north edges keep
+         * their own data), so both tiles of a shared edge compute the identical
+         * value no matter which one rebuilds first. With no neighbor the edge keeps
+         * its own value.
+         */
+        void stitchSeams();
+
         /** @brief Computes the normal at a heightmap sample using central differences. */
         kVec3 computeNormal(int x, int z) const;
 
@@ -624,6 +657,16 @@ namespace kemena
 
         bool m_loaded = false;
         int  m_lodStep = 1; ///< Mesh decimation step for distance LOD (1 = full res).
+
+        /// Re-entrancy guard for stitchSeams(): stitching a tile also stitches the
+        /// west/south neighbours it copies from.
+        bool m_stitching = false;
+
+        /// Material parameters read from the owned `.mat` before the tile's material
+        /// existed. loadOwnedAssets() runs before the first rebuildMesh() creates the
+        /// material, so the values are parked here and applied once it exists.
+        /// Declared last so the layout of the members above is unchanged.
+        std::map<kString, float> m_pendingMaterialParams;
     };
 
     // ---------------------------------------------------------------------------

@@ -463,6 +463,31 @@ namespace kemena
         void draw();
 
         /**
+         * @brief Marks this mesh as a member of a hardware-instanced group.
+         *
+         * All meshes sharing the same @p key are drawn together with one
+         * instanced draw call; each mesh contributes only its model matrix.
+         * @param enabled true to participate in instanced rendering.
+         * @param key     Stable group key (source asset + sub-mesh path).
+         */
+        void setHardwareInstanced(bool enabled, const kString &key = kString());
+
+        /** @brief Returns whether this mesh participates in hardware instancing. */
+        bool getHardwareInstanced() const { return hwInstanced; }
+
+        /** @brief Returns the hardware-instancing group key (empty when disabled). */
+        const kString &getInstanceKey() const { return instanceKey; }
+
+        /**
+         * @brief Draws this mesh geometry once per matrix using instanced drawing.
+         *
+         * Uploads the per-instance model matrices to a streaming VBO and issues
+         * a single indexed instanced draw call through the current kDriver.
+         * @param instanceMatrices World-space model matrix for every instance.
+         */
+        void drawInstanced(const std::vector<kMat4> &instanceMatrices);
+
+        /**
          * @brief Serialises the mesh to JSON.
          * @return JSON object with geometry, transform, and material references.
          */
@@ -649,6 +674,11 @@ namespace kemena
 
         std::vector<uint32_t> morphPositionBuffers; ///< Per-target position-delta VBOs.
         std::vector<uint32_t> morphNormalBuffers;   ///< Per-target normal-delta VBOs (may be empty).
+
+        bool hwInstanced = false;         ///< True when drawn via hardware instancing.
+        kString instanceKey;              ///< Stable group key across instance copies.
+        uint32_t instanceMatrixBuffer = 0; ///< Streaming per-instance model-matrix VBO.
+        size_t instanceMatrixCapacity = 0; ///< Allocated size of instanceMatrixBuffer (bytes).
 
         kMat3 normalMatrix; ///< Inverse-transpose of the model matrix (upper 3x3).
 

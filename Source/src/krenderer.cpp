@@ -21,6 +21,27 @@
 
 namespace kemena
 {
+    /**
+     * @brief Builds the batching key for a hardware-instanced mesh.
+     *
+     * The key combines the mesh's stable instance key (source asset + sub-mesh
+     * path) with its material/shader identity, so copies that look different
+     * never get merged into one draw.
+     */
+    static kString instancedGroupKey(kMesh *mesh)
+    {
+        if (!mesh || !mesh->getHardwareInstanced() || mesh->getInstanceKey().empty())
+            return kString();
+
+        kMaterial *mat = mesh->getMaterial();
+        if (!mat || !mat->getShader() || !mat->getShader()->getSupportsInstancing())
+            return kString();
+
+        uint32_t program = mat->getShader()->getShaderProgram();
+        return mesh->getInstanceKey() + "|" + mesh->getMaterialUuid() + "|" +
+               std::to_string(program);
+    }
+
     kRenderer::kRenderer()
     {
     }
@@ -728,6 +749,12 @@ void main()
             if (renderMode == kRenderMode::RENDER_MODE_FULL ||
                 renderMode == kRenderMode::RENDER_MODE_FULL_WIREFRAME)
             {
+                // Rebuild instancing batches once per frame before the main
+                // pass, so a group leader can upload every copy's transform in
+                // a single draw.
+                instancedGroups.clear();
+                collectInstancedGroups(scene->getRootNode());
+
                 renderSceneGraph(world, scene, scene->getRootNode(), false, deltaTime);
             }
 
@@ -866,6 +893,28 @@ void main()
         }
     }
 
+    void kRenderer::collectInstancedGroups(kObject *node)
+    {
+        if (node == nullptr || !node->getActive())
+            return;
+
+        if (node->getType() == kNodeType::NODE_TYPE_MESH)
+        {
+            kMesh *mesh = static_cast<kMesh *>(node);
+            if (mesh->getHardwareInstanced() && mesh->getLoaded() &&
+                mesh->getMaterial() != nullptr)
+            {
+                kString key = instancedGroupKey(mesh);
+                if (!key.empty())
+                    instancedGroups[key].push_back(mesh);
+            }
+        }
+
+        std::vector<kObject *> children = node->getChildren();
+        for (kObject *child : children)
+            collectInstancedGroups(child);
+    }
+
     void kRenderer::renderSceneGraph(kWorld *world, kScene *scene, kObject *currentNode, bool transparent, float deltaTime)
     {
         if (currentNode == nullptr || !currentNode->getActive())
@@ -879,8 +928,32 @@ void main()
 
             if (currentMesh->getLoaded() && currentMesh->getMaterial() != nullptr)
             {
-                // Frustum cull (skip if the scene has culling disabled)
-                if (octreeCullingEnabled && currentFrustumValid && scene->getFrustumCullingEnabled())
+                // Hardware instancing: only the first mesh of a group issues the
+                // draw. Every other member contributes its transform to that
+                // draw's instance buffer and skips its own draw call.
+                bool drawInstancedGroup = false;
+                std::vector<kMesh *> *instanceGroup = nullptr;
+                if (currentMesh->getHardwareInstanced() &&
+                    !currentMesh->getInstanceKey().empty())
+                {
+                    auto git = instancedGroups.find(instancedGroupKey(currentMesh));
+                    // Only batch when there is something to batch: a group of one
+                    // gains nothing from the instanced path (and a single instance
+                    // would then depend on the per-instance attribute stream).
+                    if (git != instancedGroups.end() && git->second.size() >= 2)
+                    {
+                        if (git->second.front() != currentMesh)
+                            goto renderChildren; // drawn by the group leader
+                        drawInstancedGroup = true;
+                        instanceGroup = &git->second;
+                    }
+                }
+
+                // Frustum cull (skip if the scene has culling disabled). Group
+                // leaders are not culled individually — their batch may contain
+                // visible members outside the leader's own bounds.
+                if (!drawInstancedGroup && octreeCullingEnabled && currentFrustumValid &&
+                    scene->getFrustumCullingEnabled())
                 {
                     if (currentMesh->getStatic())
                     {
@@ -1177,7 +1250,24 @@ void main()
                         }
                     }
 
-                    currentMesh->draw();
+                    if (drawInstancedGroup && instanceGroup != nullptr)
+                    {
+                        std::vector<kMat4> instanceMatrices;
+                        instanceMatrices.reserve(instanceGroup->size());
+                        for (kMesh *instance : *instanceGroup)
+                        {
+                            instance->calculateModelMatrix();
+                            instanceMatrices.push_back(instance->getModelMatrixWorld());
+                        }
+
+                        shader->setValue("useInstancing", 1);
+                        currentMesh->drawInstanced(instanceMatrices);
+                    }
+                    else
+                    {
+                        shader->setValue("useInstancing", 0);
+                        currentMesh->draw();
+                    }
 
                     // Unbind material + param units, shadow array, and skybox.
                     int matUnits = paramTexUnit;

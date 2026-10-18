@@ -146,6 +146,7 @@ namespace kemena
     void kTerrainLayer::serialize(json &j) const
     {
         j["name"] = name;
+        j["tiling"] = tiling;
         j["tileSize"] = tileSize;
         j["minHeight"] = minHeight;
         j["maxHeight"] = maxHeight;
@@ -162,6 +163,8 @@ namespace kemena
     {
         if (j.contains("name"))
             name = j["name"].get<kString>();
+        if (j.contains("tiling"))
+            tiling = j["tiling"].get<float>();
         if (j.contains("tileSize"))
             tileSize = j["tileSize"].get<float>();
         if (j.contains("minHeight"))
@@ -460,9 +463,12 @@ namespace kemena
 
         for (int l = 0; l < kMaxTerrainLayers; ++l)
         {
-            // -1 ("auto") falls back to the layer's own index, which is the legacy
-            // behaviour (layer i uses channel i of the RGBA splat map).
-            float ch = static_cast<float>(l);
+            // The value is a LAYER index into the packed weight maps (0..15); -1 is
+            // "auto" = the layer's own weight, which TerrainPBR resolves with
+            // getWeightLayer(l). The legacy 4-layer path clamps it to the RGBA
+            // channels of weight map 0, so painting layers 0..3 also works before
+            // any layer texture is assigned.
+            float ch = -1.0f;
             if (l < static_cast<int>(m_layers.size()) && m_layers[l].maskChannel >= 0)
                 ch = static_cast<float>(m_layers[l].maskChannel);
             mat->setParamFloat("u_MaskChannel[" + std::to_string(l) + "]", ch);
@@ -479,6 +485,26 @@ namespace kemena
         if (m_ormArray)    { driver->deleteTexture(m_ormArray);    m_ormArray = 0; }
         if (m_maskArray)   { driver->deleteTexture(m_maskArray);   m_maskArray = 0; }
         createLayerArrays();
+    }
+
+    void kTerrain::syncLayerTiling()
+    {
+        if (!m_mesh)
+            return;
+        kMaterial *mat = m_mesh->getMaterial();
+        if (!mat)
+            return;
+
+        for (int l = 0; l < kMaxTerrainLayers; ++l)
+        {
+            // Tiling is authored per material layer, so each slot uploads its own
+            // repeat count; layers that do not exist keep 16 (the historical
+            // default) so the shader's texture lookups stay valid.
+            float tiling = 16.0f;
+            if (l < static_cast<int>(m_layers.size()) && m_layers[l].tiling > 0.0f)
+                tiling = m_layers[l].tiling;
+            mat->setParamFloat("u_Tiling[" + std::to_string(l) + "]", tiling);
+        }
     }
 
     // ============================================================================
@@ -1222,6 +1248,18 @@ namespace kemena
                 matJson["params"] = paramsJson;
             }
 
+            // The layer stack (names, per-layer texture paths, mask channels, tile
+            // sizes) belongs to the tile's own payload — no other file records it,
+            // so without this every layer texture assignment was lost on reload.
+            json layersJson = json::array();
+            for (const auto &layer : m_layers)
+            {
+                json lj;
+                layer.serialize(lj);
+                layersJson.push_back(lj);
+            }
+            matJson["layers"] = layersJson;
+
             std::ofstream file(m_materialFilePath);
             if (file.is_open())
             {
@@ -1279,11 +1317,34 @@ namespace kemena
                 }
                 file.close();
 
-                if (m_terrainMaterial && matJson.contains("params"))
+                // Restore the layer stack saved by saveOwnedAssets(). This is the
+                // only place the layer texture paths survive a project reload.
+                if (matJson.contains("layers"))
+                {
+                    m_layers.clear();
+                    for (const auto &lj : matJson["layers"])
+                    {
+                        kTerrainLayer layer;
+                        layer.deserialize(lj);
+                        m_layers.push_back(layer);
+                    }
+                }
+
+                if (matJson.contains("params"))
                 {
                     for (auto it = matJson["params"].begin(); it != matJson["params"].end(); ++it)
-                        if (it.value().is_number())
-                            m_terrainMaterial->setParamFloat(it.key(), it.value().get<float>());
+                    {
+                        if (!it.value().is_number())
+                            continue;
+                        const float v = it.value().get<float>();
+                        // The tile's material is created by the first rebuildMesh(),
+                        // which runs *after* this call on a project load — park the
+                        // values until it exists.
+                        if (m_terrainMaterial)
+                            m_terrainMaterial->setParamFloat(it.key(), v);
+                        else
+                            m_pendingMaterialParams[it.key()] = v;
+                    }
                 }
             }
         }
@@ -1349,20 +1410,91 @@ namespace kemena
                 if (nz >= 0 && nz < res && x >= 0 && x < res)
                     return m_neighborNorth->getHeightData()[nz * res + x];
             }
-            return 0.0f;
+
+            // No neighbour in that direction (open world border): clamp to this
+            // tile's own edge instead of returning 0, which used to bend normals
+            // downwards at the outermost samples.
+            const int cx = (std::max)(0, (std::min)(x, m_heightRes - 1));
+            const int cz = (std::max)(0, (std::min)(z, m_heightRes - 1));
+            return m_heightData[cz * m_heightRes + cx];
         }
 
         return m_heightData[z * m_heightRes + x];
+    }
+
+    float kTerrain::rawCompositeHeight(int x, int z) const
+    {
+        const int res = m_heightRes;
+        const size_t i = static_cast<size_t>(z) * res + x;
+        if (i >= m_baseHeightData.size())
+            return 0.0f;
+
+        float h = m_baseHeightData[i];
+        const size_t n = m_baseHeightData.size();
+        for (const auto &layer : m_heightLayers)
+        {
+            if (!layer.enabled || layer.weight == 0.0f || layer.offsets.size() != n)
+                continue;
+            h += layer.offsets[i] * layer.weight;
+        }
+        return h;
+    }
+
+    void kTerrain::stitchSeams()
+    {
+        const int res = m_heightRes;
+        if (res < 2 || m_stitching)
+            return;
+        m_stitching = true;
+
+        // Rebuild this tile's composite from base + layers first, so stitching is
+        // idempotent (running it twice cannot accumulate).
+        for (int z = 0; z < res; ++z)
+            for (int x = 0; x < res; ++x)
+                m_heightData[static_cast<size_t>(z) * res + x] = rawCompositeHeight(x, z);
+
+        // Stitch the tiles we copy from first: a shared corner sample can only be
+        // resolved to one value if the neighbour's own west/south rules have been
+        // applied. The recursion walks strictly west/south, so it terminates at the
+        // north-east-most tile and is independent of rebuild order.
+        if (m_neighborWest && m_neighborWest->getHeightRes() == res)
+            m_neighborWest->stitchSeams();
+        if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
+            m_neighborSouth->stitchSeams();
+
+        // West column <- west neighbour's east column.
+        if (m_neighborWest && m_neighborWest->getHeightRes() == res)
+        {
+            const float *west = m_neighborWest->getHeightData();
+            for (int z = 0; z < res; ++z)
+                m_heightData[static_cast<size_t>(z) * res] =
+                    west[static_cast<size_t>(z) * res + (res - 1)];
+        }
+
+        // South row <- south neighbour's north row.
+        if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
+        {
+            const float *south = m_neighborSouth->getHeightData();
+            const size_t row = static_cast<size_t>(res - 1) * res;
+            for (int x = 0; x < res; ++x)
+                m_heightData[row + x] = south[row + x];
+        }
+
+        m_stitching = false;
     }
 
     kVec3 kTerrain::computeNormal(int x, int z) const
     {
         float s = m_sampleSpacing * 2.0f;
 
-        float hL = getStitchedHeight((std::max)(0, x - 1), z);
-        float hR = getStitchedHeight((std::min)(m_heightRes - 1, x + 1), z);
-        float hD = getStitchedHeight(x, (std::max)(0, z - 1));
-        float hU = getStitchedHeight(x, (std::min)(m_heightRes - 1, z + 1));
+        // Deliberately *unclamped*: getStitchedHeight() maps -1 / res into the
+        // neighbouring tile, so normals smooth across a tile border instead of
+        // breaking at it (the previous version clamped first, which made the
+        // neighbour lookups unreachable).
+        float hL = getStitchedHeight(x - 1, z);
+        float hR = getStitchedHeight(x + 1, z);
+        float hD = getStitchedHeight(x, z - 1);
+        float hU = getStitchedHeight(x, z + 1);
 
         kVec3 normal;
         normal.x = -(hR - hL) / s;
@@ -1416,7 +1548,25 @@ namespace kemena
         // Layer texture arrays are built lazily (each costs arraySize^2 * 16 * 4
         // bytes), by rebuildLayerArrays() from the editor once the layer image
         // paths are set — so tiles that never use the array path pay nothing and
-        // the default 4-layer splat path keeps rendering.
+        // the default 4-layer splat path keeps rendering. A tile restored from a
+        // project has its layer paths but no arrays yet, so build them here or the
+        // material would silently drop back to the legacy path.
+        if (m_albedoArray == 0 && m_normalArray == 0 && m_ormArray == 0 && m_maskArray == 0)
+        {
+            for (const auto &ly : m_layers)
+                if (!ly.albedoPath.empty() || !ly.normalPath.empty() ||
+                    !ly.ormPath.empty() || !ly.maskPath.empty())
+                {
+                    createLayerArrays();
+                    break;
+                }
+        }
+
+        // Share the boundary samples with the adjacent tiles before generating the
+        // grid: the west/south edges take the neighbour's values, so both meshes
+        // produce identical positions along a shared border (watertight seam).
+        if (stitchNeighbors)
+            stitchSeams();
 
         int res = m_heightRes;
         float half = m_worldSize * 0.5f;
@@ -1551,8 +1701,13 @@ namespace kemena
             m_terrainMaterial->setParamFloat("u_BlendSharpness", 1.0f);
             m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
             m_terrainMaterial->setParamFloat("u_Stochastic", 1.0f);
+            // Triplanar cliffs are on by default (they only kick in on slopes);
+            // the global UV rotation is opt-in and starts at 0 degrees.
+            m_terrainMaterial->setParamFloat("u_Triplanar", 1.0f);
             m_terrainMaterial->setParamFloat("u_TriplanarStrength", 0.75f);
             m_terrainMaterial->setParamFloat("u_TriplanarSharpness", 3.0f);
+            m_terrainMaterial->setParamFloat("u_RotateUV", 0.0f);
+            m_terrainMaterial->setParamFloat("u_UVRotation", 0.0f);
             // No noise variegation out of the box: until the operator assigns
             // layer textures the terrain should read as plain neutral white
             // rather than a tinted procedural surface.
@@ -1564,102 +1719,126 @@ namespace kemena
             m_mesh->setMaterial(m_terrainMaterial, false);
         }
 
-        // Bind the four weight-map textures and the per-layer texture arrays to
-        // the material. u_UseArrays selects the 16-layer array path in TerrainPBR.
+        // Bind the terrain's samplers. The engine gives a material eight texture
+        // units (0..7; 8 is the shadow array and 9 the skybox), and every sampler
+        // past that budget is silently skipped and falls back to unit 0 — which is
+        // why the terrain used to render flat white no matter what the weights
+        // said, and why assigning a layer texture changed nothing.
+        //
+        //  * Array path (a layer texture is assigned): four packed weight maps plus
+        //    the albedo / normal / ORM / mask arrays = exactly 8 samplers, and
+        //    u_SplatMap (a duplicate of weight map 0) is unbound to stay inside it.
+        //  * Legacy path (no layer texture yet): u_SplatMap plus the four albedo
+        //    maps = 5 samplers. TerrainPBR feeds the other PBR inputs from
+        //    constants there, so nothing else needs a unit.
         if (kMaterial *mat = m_mesh->getMaterial())
         {
-            for (int w = 0; w < 4; ++w)
+            bool arrayPath = (m_albedoArray != 0 && m_normalArray != 0 && m_ormArray != 0);
+#ifdef KEMENA_D3D11
+            // The D3D11 variant of TerrainPBR (TerrainPBR.hlsl) implements only the
+            // legacy 4-layer sampler2D splat path — it has no packed weight maps or
+            // texture arrays — so that backend has to stay on the legacy bindings
+            // rather than being fed samplers it cannot sample.
+            if (kDriver *activeDriver = kDriver::getCurrent())
             {
-                if (m_weightTextures[w] == 0)
-                    continue;
-                kString name = "u_WeightMap" + std::to_string(w);
-                kTexture *wt = new kTexture();
-                wt->setTextureID(m_weightTextures[w]);
-                wt->setTextureName(name);
-                wt->setType(kTextureType::TEX_TYPE_2D);
-                mat->setParamSampler2D(name, wt);
+                if (activeDriver->getRendererType() == kRendererType::RENDERER_D3D11)
+                    arrayPath = false;
             }
+#endif
 
-            // Legacy alias: weight map 0 doubles as the old u_SplatMap.
-            if (m_weightTextures[0] != 0)
-            {
-                kTexture *splatTex = new kTexture();
-                splatTex->setTextureID(m_weightTextures[0]);
-                splatTex->setTextureName("u_SplatMap");
-                splatTex->setType(kTextureType::TEX_TYPE_2D);
-                mat->setParamSampler2D("u_SplatMap", splatTex);
-            }
-
-            auto bindArray = [&](uint32_t id, const char *name)
+            auto bindSampler = [&](const kString &name, uint32_t id, kTextureType type)
             {
                 if (id == 0)
+                {
+                    // Neutralise a binding left over from an earlier rebuild: the
+                    // renderer skips a null texture, so it consumes no unit.
+                    mat->setParamSampler2D(name, nullptr);
                     return;
+                }
                 kTexture *t = new kTexture();
                 t->setTextureID(id);
                 t->setTextureName(name);
-                t->setType(kTextureType::TEX_TYPE_2D_ARRAY);
+                t->setType(type);
                 mat->setParamSampler2D(name, t);
             };
-            bindArray(m_albedoArray, "u_AlbedoArray");
-            bindArray(m_normalArray, "u_NormalArray");
-            bindArray(m_ormArray,    "u_ORMArray");
-            bindArray(m_maskArray,   "u_MaskArray");
 
-            mat->setParamFloat("u_UseArrays",
-                (m_albedoArray != 0 && m_normalArray != 0 && m_ormArray != 0) ? 1.0f : 0.0f);
-
-            // Ensure the 16 per-layer tiling uniforms exist (array path).
-            for (int l = 0; l < kMaxTerrainLayers; ++l)
+            // Slots that are not part of the active path must be neutralised, or a
+            // stale binding from a previous rebuild would keep eating a unit.
+            auto clearLegacy = [&]()
             {
-                kString tn = "u_Tiling[" + std::to_string(l) + "]";
-                if (!mat->hasParam(tn))
-                    mat->setParamFloat(tn, 16.0f);
-            }
-
-            // Per-layer splat-mask channel (R/G/B/A) for this tile's layers.
-            syncLayerMaskChannels();
-
-            // The legacy 4-layer splat path samples u_AlbedoMap[0..3] and friends.
-            // When no layer textures are assigned those samplers would be left
-            // unbound, so the terrain showed whatever texture happened to be bound
-            // last (which is why a freshly created tile came out red). Bind neutral
-            // 1x1 maps so an untextured terrain renders plain white.
-            if (m_albedoArray == 0)
-            {
-                static uint32_t s_whiteTex = 0;
-                static uint32_t s_flatNormalTex = 0;
-                static uint32_t s_blackTex = 0;
-                static bool s_neutralReady = false;
-
-                if (!s_neutralReady)
+                for (int i = 0; i < 4; ++i)
                 {
-                    s_whiteTex = makeSolidTexture(255, 255, 255, 255);
-                    s_flatNormalTex = makeSolidTexture(128, 128, 255, 255);
-                    s_blackTex = makeSolidTexture(0, 0, 0, 255);
-                    s_neutralReady = true;
+                    const kString si = "[" + std::to_string(i) + "]";
+                    mat->setParamSampler2D("u_AlbedoMap" + si, nullptr);
+                    mat->setParamSampler2D("u_NormalMap" + si, nullptr);
+                    mat->setParamSampler2D("u_RoughnessMap" + si, nullptr);
+                    mat->setParamSampler2D("u_MetalnessMap" + si, nullptr);
+                    mat->setParamSampler2D("u_AOMap" + si, nullptr);
                 }
+            };
 
-                auto bindNeutral = [&](const kString &name, uint32_t id)
-                {
-                    if (id == 0)
-                        return;
-                    kTexture *t = new kTexture();
-                    t->setTextureID(id);
-                    t->setTextureName(name);
-                    t->setType(kTextureType::TEX_TYPE_2D);
-                    mat->setParamSampler2D(name, t);
-                };
+            if (arrayPath)
+            {
+                for (int w = 0; w < 4; ++w)
+                    bindSampler("u_WeightMap" + std::to_string(w), m_weightTextures[w],
+                                kTextureType::TEX_TYPE_2D);
+
+                bindSampler("u_AlbedoArray", m_albedoArray, kTextureType::TEX_TYPE_2D_ARRAY);
+                bindSampler("u_NormalArray", m_normalArray, kTextureType::TEX_TYPE_2D_ARRAY);
+                bindSampler("u_ORMArray",    m_ormArray,    kTextureType::TEX_TYPE_2D_ARRAY);
+                bindSampler("u_MaskArray",   m_maskArray,   kTextureType::TEX_TYPE_2D_ARRAY);
+
+                mat->setParamSampler2D("u_SplatMap", nullptr);
+                clearLegacy();
+            }
+            else
+            {
+                // Legacy alias: weight map 0 is the old RGBA splat control map.
+                bindSampler("u_SplatMap", m_weightTextures[0], kTextureType::TEX_TYPE_2D);
+
+                // Neutral 1x1 albedo so an untextured terrain reads plain white
+                // instead of whatever texture happened to be bound last.
+                static uint32_t s_whiteTex = 0;
+                if (s_whiteTex == 0)
+                    s_whiteTex = makeSolidTexture(255, 255, 255, 255);
+                for (int i = 0; i < 4; ++i)
+                    bindSampler("u_AlbedoMap[" + std::to_string(i) + "]", s_whiteTex,
+                                kTextureType::TEX_TYPE_2D);
 
                 for (int i = 0; i < 4; ++i)
                 {
                     const kString si = "[" + std::to_string(i) + "]";
-                    bindNeutral("u_AlbedoMap" + si, s_whiteTex);
-                    bindNeutral("u_NormalMap" + si, s_flatNormalTex);
-                    bindNeutral("u_RoughnessMap" + si, s_whiteTex);
-                    bindNeutral("u_MetalnessMap" + si, s_blackTex);
-                    bindNeutral("u_AOMap" + si, s_whiteTex);
+                    mat->setParamSampler2D("u_NormalMap" + si, nullptr);
+                    mat->setParamSampler2D("u_RoughnessMap" + si, nullptr);
+                    mat->setParamSampler2D("u_MetalnessMap" + si, nullptr);
+                    mat->setParamSampler2D("u_AOMap" + si, nullptr);
                 }
+
+                mat->setParamSampler2D("u_AlbedoArray", nullptr);
+                mat->setParamSampler2D("u_NormalArray", nullptr);
+                mat->setParamSampler2D("u_ORMArray",    nullptr);
+                mat->setParamSampler2D("u_MaskArray",   nullptr);
             }
+
+            mat->setParamFloat("u_UseArrays", arrayPath ? 1.0f : 0.0f);
+
+            // Values restored from the owned .mat (see loadOwnedAssets) — applied
+            // here because this is where the tile's material first exists. The
+            // derived uniforms re-asserted below deliberately win over the copies.
+            if (!m_pendingMaterialParams.empty())
+            {
+                for (const auto &kv : m_pendingMaterialParams)
+                    mat->setParamFloat(kv.first, kv.second);
+                m_pendingMaterialParams.clear();
+                mat->setParamFloat("u_UseArrays", arrayPath ? 1.0f : 0.0f);
+                mat->setParamFloat("u_TileWorldSize", m_worldSize);
+            }
+
+            // Per-layer texture tiling (u_Tiling[0..15]).
+            syncLayerTiling();
+
+            // Per-layer splat-mask channel (R/G/B/A) for this tile's layers.
+            syncLayerMaskChannels();
         }
 
         // Compute AABB from height data

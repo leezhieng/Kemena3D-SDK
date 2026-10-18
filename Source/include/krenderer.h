@@ -545,6 +545,7 @@ namespace kemena
         bool octreeDebugEnabled = false; ///< Draw octree node AABBs as wireframes.
         kCamera *cullingCamera = nullptr; ///< Override camera for frustum; nullptr = main camera.
         std::unordered_set<kMesh*> visibleMeshSet; ///< Populated per frame from octree query.
+        std::unordered_map<kString, std::vector<kMesh*>> instancedGroups; ///< Per-frame hardware-instancing batches.
         kFrustum currentFrustum; ///< Frustum for the current frame, used for dynamic mesh culling.
         bool currentFrustumValid = false; ///< True when currentFrustum has been extracted this frame.
         kWindow *appWindow = nullptr; ///< Target window the renderer was initialised with (may be nullptr).
@@ -568,6 +569,13 @@ namespace kemena
          */
         void renderSceneGraph(kWorld *world, kScene *scene, kObject *rootNode,
                               bool transparent = false, float deltaTime = 0.0f);
+
+        /**
+         * @brief Collects every hardware-instanced mesh in the scene into
+         *        batching groups (keyed by instance key + material/shader).
+         * @param node Subtree root to scan.
+         */
+        void collectInstancedGroups(kObject *node);
 
         /**
          * @brief Recursively renders the scene graph into a cascade shadow-map FBO.

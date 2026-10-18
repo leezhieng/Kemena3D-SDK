@@ -416,6 +416,16 @@ namespace kemena
          */
         virtual void setVertexAttribDivisor(int location, int divisor) = 0;
 
+        /**
+         * @brief True when vertex data uploaded through this backend must be
+         *        transposed for row-major matrix attributes.
+         *
+         * D3D11's HLSL shaders consume row-major matrices, whereas OpenGL reads
+         * vertex attributes verbatim. Instance matrices uploaded as a vertex
+         * stream therefore need transposing on D3D11 only.
+         */
+        virtual bool usesRowMajorMatrixAttributes() const { return false; }
+
         // --- Draw calls ------------------------------------------------------
 
         /**
