@@ -588,9 +588,15 @@ namespace kemena
     void kTerrain::applyBrush(const kVec3 &worldPos, float radius, float strength,
                               BrushMode mode, float flattenTargetHeight)
     {
-        int cx, cz;
-        if (!worldToHeightmap(worldPos, cx, cz))
-            return;
+        // Deliberately *unclamped*: worldToHeightmap() rejects a position outside
+        // this tile, which is why a brush straddling a tile border never reached the
+        // neighbour's edge samples and the two sides were raised by different
+        // amounts. Here the brush centre may lie in a neighbouring tile; the
+        // per-sample world-distance test below decides what this tile contributes.
+        const float localX = worldPos.x - static_cast<float>(m_gridX) * m_worldSize;
+        const float localZ = worldPos.z - static_cast<float>(m_gridZ) * m_worldSize;
+        const int cx = static_cast<int>(std::round(localX / m_sampleSpacing));
+        const int cz = static_cast<int>(std::round(localZ / m_sampleSpacing));
 
         int radSamples = static_cast<int>(std::ceil(radius / m_sampleSpacing));
         int xMin = (std::max)(0, cx - radSamples);
@@ -1700,10 +1706,10 @@ namespace kemena
                 m_terrainMaterial->setParamFloat("u_Tiling[" + std::to_string(li) + "]", 16.0f);
             m_terrainMaterial->setParamFloat("u_BlendSharpness", 1.0f);
             m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
-            m_terrainMaterial->setParamFloat("u_Stochastic", 1.0f);
-            // Triplanar cliffs are on by default (they only kick in on slopes);
-            // the global UV rotation is opt-in and starts at 0 degrees.
-            m_terrainMaterial->setParamFloat("u_Triplanar", 1.0f);
+            // Stochastic anti-tiling, rotate-UV and triplanar are all opt-in: a
+            // freshly created terrain renders with plain, stable UVs.
+            m_terrainMaterial->setParamFloat("u_Stochastic", 0.0f);
+            m_terrainMaterial->setParamFloat("u_Triplanar", 0.0f);
             m_terrainMaterial->setParamFloat("u_TriplanarStrength", 0.75f);
             m_terrainMaterial->setParamFloat("u_TriplanarSharpness", 3.0f);
             m_terrainMaterial->setParamFloat("u_RotateUV", 0.0f);
