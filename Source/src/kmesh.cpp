@@ -1,5 +1,7 @@
 #include "kmesh.h"
 
+#include <algorithm>
+
 namespace kemena
 {
     kMesh::kMesh(kObject *parentNode)
@@ -705,12 +707,21 @@ namespace kemena
         // recreate the kTerrain object with the correct grid/data references.
         if (m_serializeType == "terrain")
         {
+            const kString terrainBase = getUuid().empty()
+                ? ("terrain_" + std::to_string(m_terrainGridX) + "_" + std::to_string(m_terrainGridZ))
+                : getUuid();
             data["gridX"] = m_terrainGridX;
             data["gridZ"] = m_terrainGridZ;
             data["worldSize"] = m_terrainWorldSize;
             data["heightRes"] = m_terrainHeightRes;
-            data["heightFile"] = m_terrainHeightFile.empty() ? (getUuid() + ".height") : m_terrainHeightFile;
-            data["splatFile"] = m_terrainSplatFile.empty() ? (getUuid() + ".splat") : m_terrainSplatFile;
+            data["heightFile"] = m_terrainHeightFile.empty() ? (terrainBase + ".height") : m_terrainHeightFile;
+            data["splatFile"] = m_terrainSplatFile.empty() ? (terrainBase + ".splat") : m_terrainSplatFile;
+            // The effect-layer descriptor/offset payload and the tile material
+            // are owned assets named after the same UUID. Record them so a load
+            // can always locate them instead of relying on the asset directory
+            // being configured before the tile is created.
+            data["heightLayersFile"] = terrainBase + ".hlayers";
+            data["materialFile"] = terrainBase + ".mat";
         }
         return data;
     }
@@ -724,6 +735,23 @@ namespace kemena
         m_terrainHeightRes = heightRes;
         m_terrainHeightFile = heightFile;
         m_terrainSplatFile = splatFile;
+    }
+
+    int kMesh::getTerrainShadowResolution() const
+    {
+        if (m_terrainWorldSize <= 0.0f)
+            return 0;
+
+        // Terrain owns its shadow detail: 8 shadow texels per world unit keeps
+        // the PCF footprint proportional to the tile's size (a default 256-unit
+        // tile lands on 2048, a 512-unit tile on 4096). Power-of-two for the GPU
+        // format and clamped so a huge streaming terrain can't ask for an
+        // unbounded allocation.
+        const float wanted = m_terrainWorldSize * 8.0f;
+        int resolution = 1024;
+        while (static_cast<float>(resolution) < wanted && resolution < 4096)
+            resolution <<= 1;
+        return (std::max)(1024, (std::min)(resolution, 4096));
     }
 
     void kMesh::setSerializeType(const kString &type)

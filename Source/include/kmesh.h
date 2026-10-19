@@ -145,6 +145,16 @@ namespace kemena
         int    getTerrainGridX() const { return m_terrainGridX; }
         int    getTerrainGridZ() const { return m_terrainGridZ; }
 
+        /**
+         * @brief Shadow-map resolution this terrain wants, derived from its
+         *        world size (0 for non-terrain meshes).
+         *
+         * The renderer uses the largest value among the scene's terrain tiles
+         * as its shadow-map resolution, so terrain shadow detail scales with
+         * the terrain instead of the scene's authored shadow_map_resolution.
+         */
+        int    getTerrainShadowResolution() const;
+
         /** @brief Propagates a local position change to this mesh and its children. */
         void setPosition(kVec3 newPosition) override;
         /** @brief Propagates a local rotation change to this mesh and its children. */

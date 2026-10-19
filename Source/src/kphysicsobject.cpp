@@ -212,7 +212,16 @@ namespace kemena
         // position (Jolt's BodyInterface::GetPosition() returns the origin, so
         // the owning object does NOT move). Works for every shape type,
         // including the mesh-derived ones above.
-        if (sd.offset.x != 0.0f || sd.offset.y != 0.0f || sd.offset.z != 0.0f)
+        //
+        // HeightField is the exception: its offset is already passed to
+        // HeightFieldShapeSettings (see the case above), so wrapping it again
+        // would translate the collider a second time. Terrain tiles use
+        // offset = (-worldSize/2, 0, -worldSize/2), which made the collider sit
+        // one tile away from the rendered terrain — dynamic bodies and the
+        // character controller then fell straight through it.
+        const bool offsetBakedIntoShape = (sd.type == kPhysicsShapeType::HeightField);
+        if (!offsetBakedIntoShape &&
+            (sd.offset.x != 0.0f || sd.offset.y != 0.0f || sd.offset.z != 0.0f))
         {
             JPH::RotatedTranslatedShapeSettings rts(
                 JPH::Vec3(sd.offset.x, sd.offset.y, sd.offset.z),

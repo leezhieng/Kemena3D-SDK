@@ -392,10 +392,16 @@ void main()
         // changes the bound framebuffer and viewport.
         if (scene->getShadowsEnabled())
         {
-            // Honor the scene's shadow-map resolution so the game view matches
-            // the editor view (and reflects inspector edits on the fly). The
-            // cascade array is reallocated only when the value actually changes.
-            applyShadowResolution(scene->getShadowMapResolution());
+            // Terrain sizes its own shadow map from its world size (matching the
+            // main renderer); fall back to the scene's authored resolution only
+            // when the scene has no terrain. The cascade array is reallocated
+            // only when the value actually changes.
+            int terrainResolution = 0;
+            for (kMesh *m : scene->getMeshesRef())
+                if (m != nullptr)
+                    terrainResolution = (std::max)(terrainResolution, m->getTerrainShadowResolution());
+            applyShadowResolution(terrainResolution > 0 ? terrainResolution
+                                                        : scene->getShadowMapResolution());
             renderShadowPass(world, scene, camera);
         }
 
@@ -628,6 +634,9 @@ void main()
         glGetIntegerv(GL_VIEWPORT, savedVP);
 
         // Allocate the shadow array before binding the FBO (see render()).
+        // A terrain mesh previews at its own (world-size-driven) resolution.
+        if (mesh->getTerrainShadowResolution() > 0)
+            applyShadowResolution(mesh->getTerrainShadowResolution());
         ensureShadowResources();
 
         driver->bindFramebuffer(fbo);

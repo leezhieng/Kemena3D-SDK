@@ -13,6 +13,8 @@
 #include "kmesh.h"
 #include "kmaterial.h"
 #include "kshader.h"
+#include "kphysicsobject.h"
+#include "kcharactercontroller.h"
 #include "ktexture2d.h"
 #include "ktexture.h"
 #include "kassetmanager.h"
@@ -73,26 +75,62 @@ uniform mat4 lightSpaceMatrices[4];
 uniform vec4 cascadeSplits; uniform int cascadeCount;
 uniform float shadowResolution; uniform bool enableShadow; uniform bool receiveShadow;
 uniform float shadowBias; uniform float shadowNormalBias; uniform float shadowNormalOffset; uniform float shadowSoftness;
+uniform float u_TileWorldSize;
+// Engine-derived world-space distance between two terrain height samples. Used
+// to scale the PCF footprint with the tile's size; terrain shadow resolution and
+// kernel are terrain-driven rather than copied from the scene's softness.
+uniform float u_TerrainSampleSpacing;
 in vec3 v_worldPos; in vec2 v_texCoord; in vec3 v_N;
 out vec4 fragColor;
 float csmSplit(int i) { if(i==0)return cascadeSplits.x; if(i==1)return cascadeSplits.y; if(i==2)return cascadeSplits.z; return cascadeSplits.w; }
 float csmTexelWorld(int l){ float m=abs(lightSpaceMatrices[l][0][0]); return (m>0.0)?2.0/(m*max(shadowResolution,1.0)):0.0; }
 float csmBias(vec3 n, vec3 l){ float ndl=max(dot(normalize(n),normalize(l)),0.0); return shadowBias+shadowNormalBias*min(tan(acos(max(ndl,1e-3))),8.0); }
-bool csmProject(int l, vec3 wp, out vec3 p){ vec4 ls=lightSpaceMatrices[l]*vec4(wp,1.0); p=ls.xyz/ls.w; p=p*0.5+0.5; return p.z<=1.0&&p.x>=0.0&&p.x<=1.0&&p.y>=0.0&&p.y<=1.0; }
+bool csmProject(int l, vec3 wp, out vec3 p){ vec4 ls=lightSpaceMatrices[l]*vec4(wp,1.0); p=ls.xyz/ls.w; p=p*0.5+0.5; return p.z>=0.0&&p.z<=1.0&&p.x>=0.0&&p.x<=1.0&&p.y>=0.0&&p.y<=1.0; }
+// World-space size of one terrain height sample (fallback matches the default
+// 513-sample, 256-unit tile when the engine doesn't supply the spacing).
+float terrainSampleWorld() {
+    float cell=u_TerrainSampleSpacing;
+    if(cell<=0.0001){ float tileWorld=(u_TileWorldSize>0.001)?u_TileWorldSize:256.0; cell=tileWorld/255.0; }
+    return cell;
+}
+// Terrain-derived PCF step in shadow-map texels: one tap spans half a height
+// sample (the 5x5 kernel covers about one sample). Both the sample spacing and
+// the shadow resolution scale with the tile's world size, so this follows the
+// terrain independently of the scene's shadowSoftness.
+float terrainShadowStep(int l) {
+    float texelWorld=csmTexelWorld(l);
+    float stepWorld=terrainSampleWorld()*0.5;
+    return (texelWorld>0.0)?clamp(stepWorld/texelWorld,0.5,16.0):1.0;
+}
 float csmPCF(int l, vec3 p, float b) {
-    vec2 ts=(1.0/vec2(textureSize(shadowMapArray,0).xy))*max(shadowSoftness,0.5); float s=0.0;
-    for(int x=-1;x<=1;x++)for(int y=-1;y<=1;y++)s+=(p.z-b>texture(shadowMapArray,vec3(p.xy+vec2(x,y)*ts,l)).r)?1.0:0.0;
-    return s/9.0;
+    // 5x5 kernel — same tap layout as the lit mesh shaders — with a
+    // terrain-derived step instead of the scene's softness setting.
+    vec2 ts=(1.0/max(shadowResolution,1.0))*terrainShadowStep(l); float s=0.0;
+    for(int x=-2;x<=2;x++)for(int y=-2;y<=2;y++)s+=(p.z-b>texture(shadowMapArray,vec3(p.xy+vec2(x,y)*ts,l)).r)?1.0:0.0;
+    return s/25.0;
 }
 float csmShadow(vec3 wp, vec3 n, vec3 lightDir) {
     if(!enableShadow||!receiveShadow||cascadeCount<=0)return 0.0;
     vec3 l=normalize(-lightDir);
-    float fd=abs((viewMatrix*vec4(wp,1.0)).z); int layer=cascadeCount-1;
+    float fd=abs((viewMatrix*vec4(wp,1.0)).z);
+    // Pick the cascade from the camera-distance split, then validate its
+    // light-space bounds. Testing every layer in order first pinned large
+    // terrain to cascade 0 and bypassed the farther split layers.
+    int layer=cascadeCount-1;
     for(int i=0;i<cascadeCount;i++)if(fd<csmSplit(i)){layer=i;break;}
-    vec3 samplePos=wp+normalize(n)*(csmTexelWorld(layer)*shadowNormalOffset);
-    float b=csmBias(n,l); vec3 p; if(!csmProject(layer,samplePos,p))return 0.0;
-    float sh=csmPCF(layer,p,b); float sf=csmSplit(layer); float band=sf*0.1;
-    if(layer+1<cascadeCount&&fd>sf-band){ vec3 p2; if(csmProject(layer+1,samplePos,p2)){ float t=clamp((fd-(sf-band))/max(band,1e-4),0.0,1.0); sh=mix(sh,csmPCF(layer+1,p2,b),t); } }
+    vec3 samplePos=wp+normalize(n)*(csmTexelWorld(layer)*shadowNormalOffset); vec3 p;
+    if(!csmProject(layer,samplePos,p)){
+        bool found=false;
+        for(int i=0;i<cascadeCount;i++){
+            if(i==layer)continue;
+            vec3 candidate=wp+normalize(n)*(csmTexelWorld(i)*shadowNormalOffset);
+            if(csmProject(i,candidate,p)){layer=i;samplePos=candidate;found=true;break;}
+        }
+        if(!found)return 0.0;
+    }
+    float b=csmBias(n,l); float sh=csmPCF(layer,p,b);
+    float sf=csmSplit(layer); float band=sf*0.1;
+    if(layer+1<cascadeCount&&sf>0.0&&fd>sf-band){ vec3 p2; if(csmProject(layer+1,samplePos,p2)){ float t=clamp((fd-(sf-band))/max(band,1e-4),0.0,1.0); sh=mix(sh,csmPCF(layer+1,p2,b),t); } }
     return sh;
 }
 const float PI=3.14159265359;
@@ -147,6 +185,9 @@ namespace kemena
     {
         j["name"] = name;
         j["tiling"] = tiling;
+        j["uvOffset"] = {{"x", uvOffset.x}, {"y", uvOffset.y}};
+        j["rotateUV"] = rotateUV;
+        j["uvRotation"] = uvRotation;
         j["tileSize"] = tileSize;
         j["minHeight"] = minHeight;
         j["maxHeight"] = maxHeight;
@@ -165,6 +206,16 @@ namespace kemena
             name = j["name"].get<kString>();
         if (j.contains("tiling"))
             tiling = j["tiling"].get<float>();
+        if (j.contains("uvOffset") && j["uvOffset"].is_object())
+        {
+            const json &o = j["uvOffset"];
+            uvOffset.x = o.value("x", 0.0f);
+            uvOffset.y = o.value("y", 0.0f);
+        }
+        if (j.contains("rotateUV"))
+            rotateUV = j["rotateUV"].get<bool>();
+        if (j.contains("uvRotation"))
+            uvRotation = j["uvRotation"].get<float>();
         if (j.contains("tileSize"))
             tileSize = j["tileSize"].get<float>();
         if (j.contains("minHeight"))
@@ -501,9 +552,23 @@ namespace kemena
             // repeat count; layers that do not exist keep 16 (the historical
             // default) so the shader's texture lookups stay valid.
             float tiling = 16.0f;
-            if (l < static_cast<int>(m_layers.size()) && m_layers[l].tiling > 0.0f)
-                tiling = m_layers[l].tiling;
-            mat->setParamFloat("u_Tiling[" + std::to_string(l) + "]", tiling);
+            kVec2 offset(0.0f);
+            bool rotateUV = false;
+            float uvRotation = 0.0f;
+            if (l < static_cast<int>(m_layers.size()))
+            {
+                if (m_layers[l].tiling > 0.0f)
+                    tiling = m_layers[l].tiling;
+                offset = m_layers[l].uvOffset;
+                rotateUV = m_layers[l].rotateUV;
+                uvRotation = m_layers[l].uvRotation;
+            }
+            const kString idx = std::to_string(l);
+            mat->setParamFloat("u_Tiling[" + idx + "]", tiling);
+            mat->setParamFloat("u_UVOffsetX[" + idx + "]", offset.x);
+            mat->setParamFloat("u_UVOffsetY[" + idx + "]", offset.y);
+            mat->setParamFloat("u_RotateUV[" + idx + "]", rotateUV ? 1.0f : 0.0f);
+            mat->setParamFloat("u_UVRotation[" + idx + "]", uvRotation);
         }
     }
 
@@ -586,7 +651,8 @@ namespace kemena
     }
 
     void kTerrain::applyBrush(const kVec3 &worldPos, float radius, float strength,
-                              BrushMode mode, float flattenTargetHeight)
+                              BrushMode mode, float flattenTargetHeight,
+                              const std::function<float(float, float)> *sampleBaseAtWorld)
     {
         // Deliberately *unclamped*: worldToHeightmap() rejects a position outside
         // this tile, which is why a brush straddling a tile border never reached the
@@ -608,10 +674,36 @@ namespace kemena
 
         // Sculpting and height painting only ever touch the *base* field; the
         // generated modifier layers are composited back on top afterwards.
-        // For Smooth mode, compute a local average first
+        // For Smooth mode, compute a local average first. The neighbourhood
+        // deliberately crosses tile borders: clamping at the edge made each side
+        // of a shared border average against its own repeated edge sample, so
+        // the two tiles smoothed differently and the seam tore open.
+        //
+        // The kernel size scales with the tile's world size: a 256-unit tile
+        // keeps the classic 3x3 kernel, while a larger tile (which has wider
+        // sample spacing) uses a proportionally wider kernel so a stroke relaxes
+        // the same fraction of the surface instead of a handful of samples.
+        const int smoothKernelRadius = (std::max)(1, (std::min)(
+            static_cast<int>(std::lround(m_worldSize / 256.0f)), 4));
         std::vector<float> smoothed;
         if (mode == BrushMode::Smooth)
         {
+            auto sampleBase = [&](int sx, int sz) -> float
+            {
+                // The editor supplies a pre-stroke snapshot sampler so every tile
+                // touched by the same stamp averages against identical data (the
+                // tiles are otherwise edited one after another, which made the
+                // result depend on iteration order).
+                if (sampleBaseAtWorld != nullptr)
+                {
+                    const kVec3 wp = heightmapToWorld(sx, sz);
+                    const float v = (*sampleBaseAtWorld)(wp.x, wp.z);
+                    if (!std::isnan(v))
+                        return v;
+                }
+                return getBaseHeightStitched(sx, sz);
+            };
+
             smoothed = m_baseHeightData;
             for (int z = zMin; z <= zMax; ++z)
             {
@@ -624,11 +716,11 @@ namespace kemena
                     {
                         int count = 0;
                         float sum = 0.0f;
-                        for (int nz = (std::max)(0, z - 1); nz <= (std::min)(m_heightRes - 1, z + 1); ++nz)
+                        for (int nz = z - smoothKernelRadius; nz <= z + smoothKernelRadius; ++nz)
                         {
-                            for (int nx = (std::max)(0, x - 1); nx <= (std::min)(m_heightRes - 1, x + 1); ++nx)
+                            for (int nx = x - smoothKernelRadius; nx <= x + smoothKernelRadius; ++nx)
                             {
-                                sum += m_baseHeightData[nz * m_heightRes + nx];
+                                sum += sampleBase(nx, nz);
                                 ++count;
                             }
                         }
@@ -1131,8 +1223,14 @@ namespace kemena
         m_worldSize = worldSize;
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
 
-        if (m_terrainMaterial)
-            m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
+        // Keep the shader's shadow-kernel scaling in step with the new size.
+        // TerrainPBR reads u_TerrainSampleSpacing (world units between height
+        // samples) to size its PCF footprint from this tile's world size.
+        if (kMaterial *mat = (m_mesh ? m_mesh->getMaterial() : m_terrainMaterial))
+        {
+            mat->setParamFloat("u_TileWorldSize", m_worldSize);
+            mat->setParamFloat("u_TerrainSampleSpacing", m_sampleSpacing);
+        }
 
         if (m_mesh)
             m_mesh->setPosition(getWorldPosition());
@@ -1208,17 +1306,38 @@ namespace kemena
         saveHeightData(m_heightFilePath);
         saveSplatMap(m_splatFilePath);
 
-        // Height modifier offsets: too large for JSON, so a compact binary blob
-        // (count-prefixed per layer) alongside a matching entry in the tile JSON.
+        // Height modifier payload: the offsets are too large for JSON, while the
+        // descriptors (name, type, generator parameters) are too small to be
+        // worth a separate file.  Both live in this binary blob so a project
+        // reload no longer depends on the world JSON carrying "heightLayers".
+        //
+        // v2 layout:
+        //   'K3DH' | uint32 version | int32 layerCount
+        //   per layer: int32 metaLen | char meta[metaLen] (JSON descriptor)
+        //              int32 offsetCount | float offsets[offsetCount]
+        // v1 (legacy) is just int32 layerCount followed by the offset arrays.
         if (!m_heightLayersFilePath.empty())
         {
-            std::ofstream file(m_heightLayersFilePath, std::ios::binary);
+            std::ofstream file(m_heightLayersFilePath,
+                               std::ios::binary | std::ios::trunc);
             if (file.is_open())
             {
+                const uint32_t version = 2;
                 const int32_t count = static_cast<int32_t>(m_heightLayers.size());
+                file.write("K3DH", 4);
+                file.write(reinterpret_cast<const char *>(&version), sizeof(version));
                 file.write(reinterpret_cast<const char *>(&count), sizeof(count));
+
                 for (const auto &layer : m_heightLayers)
                 {
+                    json meta;
+                    layer.serialize(meta);
+                    const std::string metaStr = meta.dump();
+                    const int32_t metaLen = static_cast<int32_t>(metaStr.size());
+                    file.write(reinterpret_cast<const char *>(&metaLen), sizeof(metaLen));
+                    if (metaLen > 0)
+                        file.write(metaStr.data(), metaLen);
+
                     const int32_t n = static_cast<int32_t>(layer.offsets.size());
                     file.write(reinterpret_cast<const char *>(&n), sizeof(n));
                     if (n > 0)
@@ -1288,19 +1407,101 @@ namespace kemena
             std::ifstream file(m_heightLayersFilePath, std::ios::binary);
             if (file.is_open())
             {
-                int32_t count = 0;
-                file.read(reinterpret_cast<char *>(&count), sizeof(count));
-                if (count >= 0)
+                char magic[4] = {0, 0, 0, 0};
+                file.read(magic, sizeof(magic));
+                const bool hasHeader =
+                    file.gcount() == static_cast<std::streamsize>(sizeof(magic)) &&
+                    std::memcmp(magic, "K3DH", sizeof(magic)) == 0;
+
+                if (hasHeader)
                 {
-                    m_heightLayers.resize(static_cast<size_t>(count));
-                    for (auto &layer : m_heightLayers)
+                    uint32_t version = 0;
+                    int32_t count = 0;
+                    file.read(reinterpret_cast<char *>(&version), sizeof(version));
+                    file.read(reinterpret_cast<char *>(&count), sizeof(count));
+
+                    // Version 2 stores a descriptor JSON per layer. Bound the
+                    // counts so a corrupt/truncated file can never allocate
+                    // unbounded memory.
+                    const int32_t maxSamples = 64 * 1024 * 1024;
+                    if (file && version >= 2 && count >= 0 && count <= 4096)
                     {
-                        int32_t n = 0;
-                        file.read(reinterpret_cast<char *>(&n), sizeof(n));
-                        layer.offsets.assign(n > 0 ? static_cast<size_t>(n) : 0, 0.0f);
-                        if (n > 0)
-                            file.read(reinterpret_cast<char *>(layer.offsets.data()),
-                                      static_cast<std::streamsize>(n) * sizeof(float));
+                        m_heightLayers.resize(static_cast<size_t>(count));
+                        for (auto &layer : m_heightLayers)
+                        {
+                            int32_t metaLen = 0;
+                            file.read(reinterpret_cast<char *>(&metaLen), sizeof(metaLen));
+                            if (!file || metaLen < 0 || metaLen > (1 << 20))
+                            {
+                                file.setstate(std::ios::failbit);
+                                break;
+                            }
+
+                            std::string meta(static_cast<size_t>(metaLen), '\0');
+                            if (metaLen > 0)
+                                file.read(meta.data(), metaLen);
+                            if (!file)
+                                break;
+
+                            if (!meta.empty())
+                            {
+                                try
+                                {
+                                    layer.deserialize(json::parse(meta));
+                                }
+                                catch (...)
+                                {
+                                    // Keep the default descriptor; the offsets
+                                    // below are still usable.
+                                }
+                            }
+
+                            int32_t n = 0;
+                            file.read(reinterpret_cast<char *>(&n), sizeof(n));
+                            if (!file || n < 0 || n > maxSamples)
+                            {
+                                layer.offsets.clear();
+                                file.setstate(std::ios::failbit);
+                                break;
+                            }
+                            layer.offsets.assign(static_cast<size_t>(n), 0.0f);
+                            if (n > 0)
+                                file.read(reinterpret_cast<char *>(layer.offsets.data()),
+                                          static_cast<std::streamsize>(n) * sizeof(float));
+                            if (!file)
+                                break;
+                        }
+                    }
+                }
+                else
+                {
+                    // Legacy payload: a bare count followed by raw offsets.
+                    // Descriptors may still come from the world JSON; only fall
+                    // back to defaults when the counts disagree.
+                    file.clear();
+                    file.seekg(0, std::ios::beg);
+                    int32_t count = 0;
+                    file.read(reinterpret_cast<char *>(&count), sizeof(count));
+                    if (file && count >= 0 && count <= 4096)
+                    {
+                        if (m_heightLayers.size() != static_cast<size_t>(count))
+                            m_heightLayers.resize(static_cast<size_t>(count));
+                        for (auto &layer : m_heightLayers)
+                        {
+                            int32_t n = 0;
+                            file.read(reinterpret_cast<char *>(&n), sizeof(n));
+                            if (!file || n < 0)
+                            {
+                                layer.offsets.clear();
+                                break;
+                            }
+                            layer.offsets.assign(static_cast<size_t>(n), 0.0f);
+                            if (n > 0)
+                                file.read(reinterpret_cast<char *>(layer.offsets.data()),
+                                          static_cast<std::streamsize>(n) * sizeof(float));
+                            if (!file)
+                                break;
+                        }
                     }
                 }
                 file.close();
@@ -1323,6 +1524,24 @@ namespace kemena
                 }
                 file.close();
 
+                // Older terrain materials stored rotation globally in the
+                // params block. Read those values first so layers that predate
+                // per-layer UV transforms can inherit them below.
+                bool  hasGlobalRotate = false;
+                float globalRotate = 0.0f;
+                float globalAngle = 0.0f;
+                if (matJson.contains("params") && matJson["params"].is_object())
+                {
+                    const json &p = matJson["params"];
+                    if (p.contains("u_RotateUV") && p["u_RotateUV"].is_number())
+                    {
+                        hasGlobalRotate = true;
+                        globalRotate = p["u_RotateUV"].get<float>() > 0.5f ? 1.0f : 0.0f;
+                    }
+                    if (p.contains("u_UVRotation") && p["u_UVRotation"].is_number())
+                        globalAngle = p["u_UVRotation"].get<float>();
+                }
+
                 // Restore the layer stack saved by saveOwnedAssets(). This is the
                 // only place the layer texture paths survive a project reload.
                 if (matJson.contains("layers"))
@@ -1332,6 +1551,12 @@ namespace kemena
                     {
                         kTerrainLayer layer;
                         layer.deserialize(lj);
+                        // Migrate the old material-wide rotation into layers
+                        // that do not have their own per-layer values yet.
+                        if (!lj.contains("rotateUV"))
+                            layer.rotateUV = hasGlobalRotate && globalRotate > 0.5f;
+                        if (!lj.contains("uvRotation"))
+                            layer.uvRotation = globalAngle;
                         m_layers.push_back(layer);
                     }
                 }
@@ -1341,6 +1566,11 @@ namespace kemena
                     for (auto it = matJson["params"].begin(); it != matJson["params"].end(); ++it)
                     {
                         if (!it.value().is_number())
+                            continue;
+                        // Material-wide UV controls are obsolete: tiling, offset
+                        // and rotation now live on each layer.
+                        if (it.key() == "u_RotateUV" || it.key() == "u_UVRotation" ||
+                            it.key() == "material.tiling")
                             continue;
                         const float v = it.value().get<float>();
                         // The tile's material is created by the first rebuildMesh(),
@@ -1387,6 +1617,56 @@ namespace kemena
         return nullptr;
     }
 
+    float kTerrain::getBaseHeightStitched(int x, int z) const
+    {
+        const int res = m_heightRes;
+        int lx = x;
+        int lz = z;
+        int stepX = 0;
+        int stepZ = 0;
+
+        // Map out-of-range indices into the neighbouring tile's local grid. The
+        // tiles share their border samples, so one spacing outside this tile is
+        // the neighbour's last/first sample.
+        while (lx < 0)      { lx += res - 1; --stepX; }
+        while (lx >= res)   { lx -= res - 1; ++stepX; }
+        while (lz < 0)      { lz += res - 1; --stepZ; }
+        while (lz >= res)   { lz -= res - 1; ++stepZ; }
+
+        const kTerrain *tile = this;
+        if (stepX < 0)
+        {
+            tile = tile->m_neighborWest;
+            if (tile == nullptr) goto fallback;
+        }
+        else if (stepX > 0)
+        {
+            tile = tile->m_neighborEast;
+            if (tile == nullptr) goto fallback;
+        }
+        if (stepZ < 0)
+        {
+            tile = tile->m_neighborSouth;
+            if (tile == nullptr) goto fallback;
+        }
+        else if (stepZ > 0)
+        {
+            tile = tile->m_neighborNorth;
+            if (tile == nullptr) goto fallback;
+        }
+
+        if (tile != nullptr && tile->m_heightRes == res &&
+            tile->m_baseHeightData.size() == static_cast<size_t>(res) * res)
+            return tile->m_baseHeightData[static_cast<size_t>(lz) * res + lx];
+
+    fallback:
+        // Open-world border: clamp to this tile's own edge so the brush keeps a
+        // stable value instead of reading zero.
+        const int cx = (std::max)(0, (std::min)(x, res - 1));
+        const int cz = (std::max)(0, (std::min)(z, res - 1));
+        return m_baseHeightData[static_cast<size_t>(cz) * res + cx];
+    }
+
     float kTerrain::getStitchedHeight(int x, int z) const
     {
         if (x < 0 || x >= m_heightRes || z < 0 || z >= m_heightRes)
@@ -1400,7 +1680,10 @@ namespace kemena
             }
             if (x >= res && m_neighborEast && m_neighborEast->getHeightData())
             {
-                int nx = x - res;
+                // Border samples are duplicated (this tile's x=res-1 equals the
+                // neighbour's x=0), so one spacing past the edge is the
+                // neighbour's x=1, not x=0.
+                int nx = x - (res - 1);
                 if (nx >= 0 && nx < res && z >= 0 && z < res)
                     return m_neighborEast->getHeightData()[z * res + nx];
             }
@@ -1412,7 +1695,8 @@ namespace kemena
             }
             if (z >= res && m_neighborNorth && m_neighborNorth->getHeightData())
             {
-                int nz = z - res;
+                // Same duplicate-border rule as the east edge above.
+                int nz = z - (res - 1);
                 if (nz >= 0 && nz < res && x >= 0 && x < res)
                     return m_neighborNorth->getHeightData()[nz * res + x];
             }
@@ -1459,31 +1743,51 @@ namespace kemena
             for (int x = 0; x < res; ++x)
                 m_heightData[static_cast<size_t>(z) * res + x] = rawCompositeHeight(x, z);
 
-        // Stitch the tiles we copy from first: a shared corner sample can only be
-        // resolved to one value if the neighbour's own west/south rules have been
-        // applied. The recursion walks strictly west/south, so it terminates at the
-        // north-east-most tile and is independent of rebuild order.
+        // Stitch the tiles whose edges feed this one first. The recursion walks
+        // strictly west/south, so it terminates at the north-east-most tile.
         if (m_neighborWest && m_neighborWest->getHeightRes() == res)
             m_neighborWest->stitchSeams();
         if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
             m_neighborSouth->stitchSeams();
 
-        // West column <- west neighbour's east column.
+        // Set one edge sample on both sides of a seam to the same composite
+        // height, and fold the difference into the base field so the result
+        // survives the next recomposeHeight()/serialization.
+        auto setCompositeEdge = [res](kTerrain *tile, int x, int z, float target)
+        {
+            const size_t i = static_cast<size_t>(z) * res + x;
+            const float contribution = tile->rawCompositeHeight(x, z) -
+                                       tile->m_baseHeightData[i];
+            tile->m_baseHeightData[i] = target - contribution;
+            tile->m_heightData[i] = target;
+        };
+
+        // West/east seam: average both tiles' edge polygons and write the
+        // average back to *both* sides. The old one-way copy left the existing
+        // tile and the newly-added neighbour disagreeing until a reload.
         if (m_neighborWest && m_neighborWest->getHeightRes() == res)
         {
-            const float *west = m_neighborWest->getHeightData();
             for (int z = 0; z < res; ++z)
-                m_heightData[static_cast<size_t>(z) * res] =
-                    west[static_cast<size_t>(z) * res + (res - 1)];
+            {
+                const float a = rawCompositeHeight(0, z);
+                const float b = m_neighborWest->rawCompositeHeight(res - 1, z);
+                const float avg = (a + b) * 0.5f;
+                setCompositeEdge(this, 0, z, avg);
+                setCompositeEdge(m_neighborWest, res - 1, z, avg);
+            }
         }
 
-        // South row <- south neighbour's north row.
+        // South/north seam: same bidirectional average.
         if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
         {
-            const float *south = m_neighborSouth->getHeightData();
-            const size_t row = static_cast<size_t>(res - 1) * res;
             for (int x = 0; x < res; ++x)
-                m_heightData[row + x] = south[row + x];
+            {
+                const float a = rawCompositeHeight(x, res - 1);
+                const float b = m_neighborSouth->rawCompositeHeight(x, 0);
+                const float avg = (a + b) * 0.5f;
+                setCompositeEdge(this, x, res - 1, avg);
+                setCompositeEdge(m_neighborSouth, x, 0, avg);
+            }
         }
 
         m_stitching = false;
@@ -1527,11 +1831,43 @@ namespace kemena
         kMaterial *savedMaterial = nullptr;
         kString savedMaterialUuid;
         kString savedUuid;
+        // Preserve the authored transform across rebuilds. Sculpting or adding a
+        // height-modifier layer rebuilds the mesh, and resetting it to the tile's
+        // default grid position would silently undo a Y offset / rotation / scale
+        // the user applied with the gizmo (and visibly move its shadows too).
+        kVec3 savedPosition = getWorldPosition();
+        kQuat savedRotation = kQuat(1.0f, 0.0f, 0.0f, 0.0f);
+        kVec3 savedScale    = kVec3(1.0f);
+        bool savedHasPhysics = false;
+        kPhysicsObjectDesc savedPhysics;
+        bool savedHasCharacter = false;
+        kCharacterControllerDesc savedCharacter;
+        bool savedStatic = false;
+        bool savedVisible = true;
+        bool savedCastShadow = true;
+        bool savedReceiveShadow = true;
+        bool savedActive = true;
+        uint32_t savedLayerMask = 1u;
         if (m_mesh)
         {
             savedMaterial = m_mesh->getMaterial();
             savedMaterialUuid = m_mesh->getMaterialUuid();
             savedUuid = m_mesh->getUuid();
+            savedPosition = m_mesh->getPosition();
+            savedRotation = m_mesh->getRotation();
+            savedScale    = m_mesh->getScale();
+            savedHasPhysics = m_mesh->getHasPhysicsDesc();
+            if (savedHasPhysics)
+                savedPhysics = m_mesh->getPhysicsDesc();
+            savedHasCharacter = m_mesh->getHasCharacterDesc();
+            if (savedHasCharacter)
+                savedCharacter = m_mesh->getCharacterDesc();
+            savedStatic = m_mesh->getStatic();
+            savedVisible = m_mesh->getVisible();
+            savedCastShadow = m_mesh->getCastShadow();
+            savedReceiveShadow = m_mesh->getReceiveShadow();
+            savedActive = m_mesh->getActive();
+            savedLayerMask = m_mesh->getLayerMask();
             // Detach material so it survives mesh deletion
             m_mesh->setMaterial(nullptr, false);
             m_scene->removeMesh(m_mesh);
@@ -1645,9 +1981,29 @@ namespace kemena
         // Register with scene — re-use the saved UUID so the editor
         // inspector / object selection stays valid across rebuilds.
         m_scene->addMesh(m_mesh, savedUuid.empty() ? generateUuid() : savedUuid);
-        m_mesh->setPosition(getWorldPosition());
+        // Forced setters: a terrain tile can be marked static yet still be
+        // positioned with the editor gizmo; the plain setters would ignore it.
+        m_mesh->setPositionForced(savedPosition);
+        m_mesh->setRotationForced(savedRotation);
+        m_mesh->setScaleForced(savedScale);
         m_mesh->setName("Terrain_" + std::to_string(m_gridX) + "_" + std::to_string(m_gridZ));
         m_mesh->setLoaded(true);
+        // Object flags and the generated collider must survive the delete/new
+        // cycle. Losing the physics descriptor here made the terrain tile's
+        // HeightField collider disappear after sculpting or adding an effect
+        // layer, so it was never serialized to the .world file.
+        m_mesh->setActive(savedActive);
+        m_mesh->setStatic(savedStatic);
+        m_mesh->setVisible(savedVisible);
+        m_mesh->setCastShadow(savedCastShadow);
+        m_mesh->setReceiveShadow(savedReceiveShadow);
+        m_mesh->setLayerMask(savedLayerMask);
+        m_mesh->setHasPhysicsDesc(savedHasPhysics);
+        if (savedHasPhysics)
+            m_mesh->getPhysicsDesc() = savedPhysics;
+        m_mesh->setHasCharacterDesc(savedHasCharacter);
+        if (savedHasCharacter)
+            m_mesh->getCharacterDesc() = savedCharacter;
         // Serialize as type "terrain" so the .world file preserves this as
         // a distinct object type (like light, camera) instead of a generic mesh.
         m_mesh->setSerializeType("terrain");
@@ -1721,6 +2077,9 @@ namespace kemena
             m_terrainMaterial->setParamFloat("u_NoiseScale", 0.02f);
             // Masked blending is off until a layer albedo carries an alpha mask.
             m_terrainMaterial->setParamFloat("u_MaskedBlend", 0.0f);
+            // Terrain shading model: 0 = Flat, 1 = Phong, 2 = PBR. PBR is the
+            // historical look, so it stays the default for existing projects.
+            m_terrainMaterial->setParamFloat("u_ShaderType", 2.0f);
 
             m_mesh->setMaterial(m_terrainMaterial, false);
         }
@@ -1827,6 +2186,11 @@ namespace kemena
             }
 
             mat->setParamFloat("u_UseArrays", arrayPath ? 1.0f : 0.0f);
+            // Engine-derived shadow-kernel input: TerrainPBR turns this world-space
+            // height-sample spacing into its own PCF step, independent of the
+            // scene's shadow softness (the renderer also lets terrain choose the
+            // shadow-map resolution from the same world size).
+            mat->setParamFloat("u_TerrainSampleSpacing", m_sampleSpacing);
 
             // Values restored from the owned .mat (see loadOwnedAssets) — applied
             // here because this is where the tile's material first exists. The
@@ -1836,9 +2200,18 @@ namespace kemena
                 for (const auto &kv : m_pendingMaterialParams)
                     mat->setParamFloat(kv.first, kv.second);
                 m_pendingMaterialParams.clear();
+                // Derived values win over whatever the .mat carried: the tile's
+                // current size/spacing is authoritative.
                 mat->setParamFloat("u_UseArrays", arrayPath ? 1.0f : 0.0f);
                 mat->setParamFloat("u_TileWorldSize", m_worldSize);
+                mat->setParamFloat("u_TerrainSampleSpacing", m_sampleSpacing);
             }
+
+            // Terrains saved before the shading-model control existed have no
+            // u_ShaderType parameter; default them to PBR rather than letting the
+            // shader start at 0 (Flat).
+            if (!mat->hasParam("u_ShaderType"))
+                mat->setParamFloat("u_ShaderType", 2.0f);
 
             // Per-layer texture tiling (u_Tiling[0..15]).
             syncLayerTiling();
@@ -2238,6 +2611,16 @@ namespace kemena
         auto it = m_tiles.find(key);
         if (it == m_tiles.end())
             return false;
+
+        // Guarantee the scene-graph node is gone before the tile (and its mesh)
+        // is destroyed. unload() does this too when the tile still has a scene
+        // pointer; detaching here also covers tiles whose scene link was lost,
+        // which previously left a visible terrain object after "Remove neighbor".
+        if (kMesh *mesh = it->second->getMesh())
+        {
+            mesh->setActive(false);
+            mesh->detachFromParent();
+        }
 
         // Deleting a tile deletes the assets it owns.
         it->second->destroyOwnedAssets();

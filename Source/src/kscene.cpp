@@ -279,7 +279,13 @@ namespace kemena
 
     void kScene::removeMesh(kMesh *mesh)
     {
+        if (!mesh) return;
         mesh->detachFromParent();
+        // Make sure no scene-side cache keeps the deleted mesh alive. Terrain
+        // removal used to leave the node listed because only the parent edge was
+        // cleared; purge the object/mesh lists as well.
+        meshes.erase(std::remove(meshes.begin(), meshes.end(), mesh), meshes.end());
+        objects.erase(std::remove(objects.begin(), objects.end(), mesh), objects.end());
     }
 
     void kScene::removeLight(kLight *light)

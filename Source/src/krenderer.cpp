@@ -537,6 +537,12 @@ void main()
         else
             frameId++;
 
+        // Terrain sizes its own shadow map: the PCF kernel below is derived from
+        // each tile's world size, so the texel density has to scale with the
+        // terrain too instead of inheriting the scene's shadow_map_resolution.
+        // This overrides the authored setting while a terrain is present.
+        setTerrainShadowResolution(computeTerrainShadowResolution(scene));
+
 #ifdef KEMENA_D3D11
         // Backends that own a swap chain (D3D11) must recreate their back buffer
         // when the OS window changes size.  This is deliberately D3D11-only: the
@@ -548,8 +554,14 @@ void main()
 #endif
 
         // Render shadow scene (cascaded shadow mapping)
-        if (shadowShader != nullptr && world->getMainCamera() != nullptr)
+        if (enableShadow && shadowShader != nullptr && world->getMainCamera() != nullptr)
         {
+            // Keep the cascade array in step with the effective (possibly
+            // terrain-driven) resolution before the pass samples/sets it.
+            if (shadowTexArray == 0 ||
+                allocatedShadowResolution != getEffectiveShadowResolution())
+                rebuildShadowResources(getEffectiveShadowResolution());
+
             kCamera *shadowCam = world->getMainCamera();
             float camNear = shadowCam->getNearClip();
             float camFar = shadowCam->getFarClip();
@@ -628,7 +640,8 @@ void main()
 
                     // Texel-snap the sphere centre in light space to kill the
                     // shimmer that otherwise appears as the camera translates.
-                    float texelsPerUnit = (float)shadowResolution / (2.0f * radius);
+                    const int mapResolution = getEffectiveShadowResolution();
+                    float texelsPerUnit = (float)mapResolution / (2.0f * radius);
                     kMat4 snapView = glm::scale(kMat4(1.0f), kVec3(texelsPerUnit)) *
                                      glm::lookAt(kVec3(0.0f), lightDir, up);
                     kMat4 snapViewInv = glm::inverse(snapView);
@@ -647,7 +660,7 @@ void main()
 
                     // Render the scene depth into this cascade's array layer.
                     driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, cascade);
-                    driver->setViewport(0, 0, shadowResolution, shadowResolution);
+                    driver->setViewport(0, 0, mapResolution, mapResolution);
                     driver->clear(false, true, false);
                     shadowShader->use();
                     renderSceneGraphShadow(world, scene, scene->getRootNode(),
@@ -1135,7 +1148,7 @@ void main()
                     shader->setValue("cascadeSplits",
                                      kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
                     shader->setValue("cascadeCount", cascCount);
-                    shader->setValue("shadowResolution", (float)shadowResolution);
+                    shader->setValue("shadowResolution", (float)getEffectiveShadowResolution());
                     shader->setValue("shadowDebug", shadowDebug);
                     shader->setValue("enableShadow", enableShadow);
                     shader->setValue("receiveShadow", currentMesh->getReceiveShadow());
@@ -1424,7 +1437,7 @@ void main()
                     shader->setValue("cascadeSplits",
                                      kVec4(cascadeSplits[0], cascadeSplits[1], cascadeSplits[2], cascadeSplits[3]));
                     shader->setValue("cascadeCount", decalCascCount);
-                    shader->setValue("shadowResolution", (float)shadowResolution);
+                    shader->setValue("shadowResolution", (float)getEffectiveShadowResolution());
                     shader->setValue("shadowDebug", shadowDebug);
                     shader->setValue("enableShadow", enableShadow);
                     shader->setValue("receiveShadow", true);
@@ -2052,20 +2065,18 @@ void main()
         // every frame (the studio toggles it from kScene::getShadowsEnabled).
         // Once allocated we keep the FBO around — toggling shadows off just
         // skips the pass, it doesn't tear the resources down.
-        if (newEnable && shadowTexArray == 0)
+        if (newEnable && (shadowTexArray == 0 ||
+                          getEffectiveShadowResolution() != allocatedShadowResolution ||
+                          (useDefaultShader && shadowShader == nullptr)))
         {
             // One depth-texture array (max cascades) + one FBO; the per-cascade
-            // layer is attached during the shadow pass.
-            shadowTexArray = driver->createFBODepthTextureArray(
-                shadowResolution, shadowResolution, kMaxShadowCascades);
-            shadowFbo = driver->createFramebuffer();
-            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
+            // layer is attached during the shadow pass. Allocate at the effective
+            // resolution: terrain may already have overridden the authored size.
+            if (shadowTexArray == 0 ||
+                getEffectiveShadowResolution() != allocatedShadowResolution)
+                rebuildShadowResources(getEffectiveShadowResolution());
 
-            if (!driver->isFramebufferComplete())
-                std::cerr << "Shadow framebuffer is incomplete" << std::endl;
-            driver->unbindFramebuffer();
-
-            if (useDefaultShader)
+            if (useDefaultShader && shadowShader == nullptr)
             {
                 kString vertexShader = R"(#version 330 core
 layout (location = 0) in vec3 vertexPosition;
@@ -2157,15 +2168,68 @@ void main() {}
             return;
         shadowResolution = resolution;
 
-        // Rebuild the array texture at the new resolution if shadows are live.
-        if (enableShadow && shadowTexArray)
+        // Rebuild only when the authored value is the one actually in use: a
+        // terrain override keeps the map at the terrain-driven size.
+        if (enableShadow && shadowTexArray &&
+            getEffectiveShadowResolution() != allocatedShadowResolution)
+            rebuildShadowResources(getEffectiveShadowResolution());
+    }
+
+    void kRenderer::setTerrainShadowResolution(int resolution)
+    {
+        if (resolution < 0)
+            resolution = 0;
+        if (resolution == terrainShadowResolution)
+            return;
+        terrainShadowResolution = resolution;
+
+        if (enableShadow && shadowTexArray &&
+            getEffectiveShadowResolution() != allocatedShadowResolution)
+            rebuildShadowResources(getEffectiveShadowResolution());
+    }
+
+    int kRenderer::computeTerrainShadowResolution(kScene *scene) const
+    {
+        if (scene == nullptr)
+            return 0;
+
+        // Terrain tiles own the policy: kMesh::getTerrainShadowResolution()
+        // derives the map size from each tile's world size. Use the largest tile
+        // in the scene (they normally share one size), so the renderer just
+        // honours what the terrain asks for instead of the scene's authored
+        // shadow_map_resolution. Non-terrain meshes return 0.
+        int resolution = 0;
+        for (kMesh *mesh : scene->getMeshesRef())
+        {
+            if (mesh == nullptr)
+                continue;
+            resolution = (std::max)(resolution, mesh->getTerrainShadowResolution());
+        }
+        return resolution;
+    }
+
+    void kRenderer::rebuildShadowResources(int resolution)
+    {
+        if (resolution <= 0)
+            resolution = 1;
+
+        if (shadowTexArray != 0)
         {
             driver->deleteFBOTexture(shadowTexArray);
-            shadowTexArray = driver->createFBODepthTextureArray(
-                shadowResolution, shadowResolution, kMaxShadowCascades);
-            driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
-            driver->unbindFramebuffer();
+            shadowTexArray = 0;
         }
+
+        shadowTexArray = driver->createFBODepthTextureArray(
+            resolution, resolution, kMaxShadowCascades);
+        if (shadowFbo == 0)
+            shadowFbo = driver->createFramebuffer();
+        driver->attachFBODepthTextureLayer(shadowFbo, shadowTexArray, 0);
+
+        if (!driver->isFramebufferComplete())
+            std::cerr << "Shadow framebuffer is incomplete" << std::endl;
+        driver->unbindFramebuffer();
+
+        allocatedShadowResolution = resolution;
     }
 
     void kRenderer::setEnableAutoExposure(bool newEnable)

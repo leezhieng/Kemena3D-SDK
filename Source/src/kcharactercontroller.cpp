@@ -15,7 +15,6 @@
 
 #include <algorithm>
 #include <iostream>
-#include <algorithm>
 
 // Degrees → radians (avoids pulling in extra math headers).
 static constexpr float K_DEG2RAD = 0.01745329252f;
@@ -29,6 +28,7 @@ namespace kemena
         bool                   initialized = false;
         kVec3                  pendingMove = kVec3(0.0f); ///< Displacement queued by move() for the next step.
         bool                   moveDriven  = false;       ///< True while move() is the active driver (enables the anti-slide brake).
+        float                  stepHeight  = 0.3f;        ///< Maximum step height, also used as the ground-snap margin.
     };
 
     kCharacterController::kCharacterController()
@@ -76,6 +76,7 @@ namespace kemena
 
         JPH::Ref<JPH::CharacterSettings> settings = new JPH::CharacterSettings();
         settings->mShape         = shape;
+        m_impl->stepHeight       = std::max(desc.stepHeight, 0.1f);
         settings->mLayer         = static_cast<JPH::ObjectLayer>(
             kemena::physicsObjectLayer(userLayerIndex, /*moving=*/true));
         settings->mMass          = desc.mass;
@@ -126,9 +127,36 @@ namespace kemena
     {
         if (!m_impl->initialized || m_impl->character == nullptr)
             return;
-        // Refresh the character's ground/contact state against the world after
-        // the simulation step. 0.05 m is Jolt's recommended separation margin.
-        m_impl->character->PostSimulation(0.05f);
+
+        // Use the configured step height as the downward detection margin. The
+        // old fixed 0.05 m only saw ground directly under the feet, so walking
+        // downhill made the character go airborne until gravity caught up, and
+        // stopping left it floating until it fell.
+        const float snapDistance = m_impl->stepHeight + 0.1f;
+        m_impl->character->PostSimulation(snapDistance);
+
+        // Stick to walkable ground: if the capsule origin is only slightly above
+        // the reported ground contact and we are not moving upward (no jump),
+        // snap the feet down to the surface. Steep ground is intentionally not
+        // snapped — Jolt reports it as OnSteepGround and gravity/sliding handles
+        // it instead.
+        if (m_impl->character->GetGroundState() ==
+            JPH::CharacterBase::EGroundState::OnGround)
+        {
+            const JPH::Vec3 velocity = m_impl->character->GetLinearVelocity();
+            if (velocity.GetY() <= 0.1f)
+            {
+                const JPH::RVec3 pos = m_impl->character->GetPosition();
+                const JPH::RVec3 ground = m_impl->character->GetGroundPosition();
+                const float gap = pos.GetY() - ground.GetY();
+                if (gap > 0.0f && gap <= snapDistance)
+                {
+                    m_impl->character->SetPosition(
+                        JPH::RVec3(pos.GetX(), ground.GetY() + 0.01f, pos.GetZ()),
+                        JPH::EActivation::Activate);
+                }
+            }
+        }
     }
 
     kVec3 kCharacterController::getPosition() const
@@ -195,6 +223,8 @@ namespace kemena
             float vy = cur.GetY();
             if (m_impl->pendingMove.y != 0.0f)
                 vy = m_impl->pendingMove.y / deltaTime;
+            else if (m_impl->character->IsSupported() && vy > 0.0f)
+                vy = 0.0f; // kill residual upward velocity from slope/step resolution
 
             const float invDt = 1.0f / deltaTime;
             m_impl->character->SetLinearVelocity(JPH::Vec3(
@@ -213,7 +243,10 @@ namespace kemena
         if (m_impl->moveDriven)
         {
             const JPH::Vec3 cur = m_impl->character->GetLinearVelocity();
-            m_impl->character->SetLinearVelocity(JPH::Vec3(0.0f, cur.GetY(), 0.0f));
+            float vy = cur.GetY();
+            if (m_impl->character->IsSupported() && vy > 0.0f)
+                vy = 0.0f;
+            m_impl->character->SetLinearVelocity(JPH::Vec3(0.0f, vy, 0.0f));
             m_impl->moveDriven = false;
         }
     }

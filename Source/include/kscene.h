@@ -294,13 +294,21 @@ namespace kemena
         void setShadowNormalOffset(float offset);
 
         /**
-         * @brief Returns the per-cascade shadow map resolution in pixels.
+         * @brief Returns the authored per-cascade shadow map resolution in pixels.
+         *
+         * Note: when the scene contains terrain, the renderer sizes the shared
+         * cascade map from the terrain's world size instead (the terrain PCF
+         * kernel is derived from the same size), so this authored value is
+         * overridden while a terrain is present.
          */
         int  getShadowMapResolution() const;
 
         /**
-         * @brief Sets the per-cascade shadow map resolution (e.g. 512, 1024, 2048, 4096).
-         *        Reallocates the shadow texture on the renderer.
+         * @brief Sets the authored per-cascade shadow map resolution
+         *        (e.g. 512, 1024, 2048, 4096).
+         *
+         * The renderer reallocates the shadow texture when this is the active
+         * value. Scenes with terrain use a terrain-driven resolution instead.
          */
         void setShadowMapResolution(int resolution);
 

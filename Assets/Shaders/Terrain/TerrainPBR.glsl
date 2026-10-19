@@ -130,6 +130,10 @@ uniform sampler2D u_AOMap[4];          // 4 AO maps
 uniform float     u_Tiling[4];         // Per-layer UV tiling scale
 uniform float     u_MaskChannel[4];    // Per-layer splat-mask channel (0..3 = R/G/B/A)
 uniform float     u_BlendSharpness;    // Blend edge sharpness (0.5 - 4.0)
+uniform float     u_TileWorldSize;     // World size of one tile (for world-space UVs)
+// Engine-derived: world-space distance between two terrain height samples, used
+// to scale the PCF footprint with the tile's size.
+uniform float     u_TerrainSampleSpacing;
 
 // ===========================================================================
 // Varying inputs
@@ -177,14 +181,40 @@ bool csmProject(int layer, vec3 wp, out vec3 p)
     return p.z <= 1.0 && p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0;
 }
 
+// World-space size of one terrain height sample for this tile (fallback keeps
+// assets that only carry u_TileWorldSize working at the default tile density).
+float terrainSampleWorld()
+{
+    float cell = u_TerrainSampleSpacing;
+    if (cell <= 0.0001)
+    {
+        float tileWorld = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+        cell = tileWorld / 255.0;
+    }
+    return cell;
+}
+
+// Terrain-derived PCF step in shadow-map texels: one tap spans half a height
+// sample (the 5x5 kernel covers about one sample). Both the sample spacing and
+// the shadow resolution scale with the tile's world size, so this follows the
+// terrain independently of the scene's shadowSoftness.
+float terrainShadowStep(int layer)
+{
+    float texelWorld = csmTexelWorld(layer);
+    float stepWorld  = terrainSampleWorld() * 0.5;
+    return (texelWorld > 0.0) ? clamp(stepWorld / texelWorld, 0.5, 16.0) : 1.0;
+}
+
 float csmPCF(int layer, vec3 p, float bias)
 {
-    vec2 ts = (1.0 / vec2(textureSize(shadowMapArray, 0).xy)) * max(shadowSoftness, 0.5);
+    // 5x5 kernel — same tap layout as the scene's lit mesh shaders — with a
+    // terrain-derived step instead of the scene's softness setting.
+    vec2 ts = vec2(1.0 / max(shadowResolution, 1.0)) * terrainShadowStep(layer);
     float s = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
+    for (int x = -2; x <= 2; x++)
+        for (int y = -2; y <= 2; y++)
             s += (p.z - bias > texture(shadowMapArray, vec3(p.xy + vec2(x, y) * ts, float(layer))).r) ? 1.0 : 0.0;
-    return s / 9.0;
+    return s / 25.0;
 }
 
 float csmShadow(vec3 wp, vec3 n, vec3 lightDir)
@@ -192,18 +222,34 @@ float csmShadow(vec3 wp, vec3 n, vec3 lightDir)
     if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
     vec3 l = normalize(-lightDir);
     float fd = abs((viewMatrix * vec4(wp, 1.0)).z);
-    int layer = cascadeCount - 1;
-    for (int i = 0; i < cascadeCount; i++)
-        if (fd < csmSplit(i)) { layer = i; break; }
-    // Normal-offset, then constant + slope-scaled depth bias.
-    vec3 samplePos = wp + normalize(n) * (csmTexelWorld(layer) * shadowNormalOffset);
-    float bias = csmBias(n, l);
+
+    // Pick the highest-resolution cascade whose light-space box actually
+    // contains the receiver. View-depth split selection alone leaves large
+    // terrain fragments outside their selected cascade's map (so they return
+    // lit), and any stale/zero cascadeSplits would silently pin the whole tile
+    // to the coarse last layer. Testing the real projected bounds makes every
+    // cascade get used for the distance range it covers.
+    int layer = -1;
+    vec3 samplePos = wp;
     vec3 p;
-    if (!csmProject(layer, samplePos, p)) return 0.0;
+    for (int i = 0; i < cascadeCount; i++)
+    {
+        vec3 candidate = wp + normalize(n) * (csmTexelWorld(i) * shadowNormalOffset);
+        if (csmProject(i, candidate, p))
+        {
+            layer = i;
+            samplePos = candidate;
+            break;
+        }
+    }
+    if (layer < 0) return 0.0;
+
+    // Constant + slope-scaled depth bias.
+    float bias = csmBias(n, l);
     float sh = csmPCF(layer, p, bias);
     float sf = csmSplit(layer);
     float band = sf * 0.1;
-    if (layer + 1 < cascadeCount && fd > sf - band)
+    if (layer + 1 < cascadeCount && sf > 0.0 && fd > sf - band)
     {
         vec3 p2;
         if (csmProject(layer + 1, samplePos, p2))

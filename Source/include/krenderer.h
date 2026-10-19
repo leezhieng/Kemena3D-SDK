@@ -235,10 +235,32 @@ namespace kemena
         /**
          * @brief Sets the per-cascade shadow-map resolution (e.g. 1024/2048/4096).
          *        Rebuilds the shadow texture if shadows are enabled.
+         *
+         * This is the scene/authored setting. When the scene contains terrain,
+         * setTerrainShadowResolution() takes precedence for the shared cascade
+         * map so terrain can size its own shadow detail from its world size.
          */
         void setShadowResolution(int resolution);
-        /** @brief Returns the per-cascade shadow-map resolution. */
+        /** @brief Returns the authored per-cascade shadow-map resolution. */
         int  getShadowResolution() const { return shadowResolution; }
+
+        /**
+         * @brief Lets terrain tiles drive the shared shadow-map resolution.
+         *
+         * TerrainPBR derives its PCF kernel from the tile's world size, so the
+         * texel density must scale with that size too instead of inheriting the
+         * scene's shadow_map_resolution. A non-zero override replaces the
+         * authored resolution for the shared cascade map (other objects receive
+         * the same, larger/smaller, map). Pass 0 to clear the override.
+         */
+        void setTerrainShadowResolution(int resolution);
+        /** @brief Returns the active terrain-driven resolution (0 = none). */
+        int  getTerrainShadowResolution() const { return terrainShadowResolution; }
+        /** @brief Returns the resolution actually used to allocate/sample the map. */
+        int  getEffectiveShadowResolution() const
+        {
+            return terrainShadowResolution > 0 ? terrainShadowResolution : shadowResolution;
+        }
 
         /** @brief Sets the cascade split blend: 0 = uniform, 1 = logarithmic. */
         void  setShadowSplitLambda(float lambda) { shadowSplitLambda = lambda; }
@@ -601,6 +623,15 @@ namespace kemena
                                     float deltaTime = 0.0f);
 
         /**
+         * @brief Chooses the shared shadow-map resolution from the scene's
+         *        terrain world size (0 when the scene contains no terrain).
+         */
+        int  computeTerrainShadowResolution(kScene *scene) const;
+
+        /** @brief (Re)allocates the cascade depth texture array at @p resolution. */
+        void rebuildShadowResources(int resolution);
+
+        /**
          * @brief Recursively renders the scene graph into the picking FBO.
          *
          * Each mesh is drawn with its unique ID encoded as an RGB flat color.
@@ -646,7 +677,7 @@ namespace kemena
         static constexpr int kMaxShadowCascades = 4;
         bool     enableShadow       = false;
         kShader *shadowShader       = nullptr;
-        int      shadowResolution   = 2048;   ///< Per-cascade map size (configurable).
+        int      shadowResolution   = 2048;   ///< Authored per-cascade map size.
         int      shadowCascadeCount = 3;      ///< Active cascades (1..kMaxShadowCascades).
         float    shadowSplitLambda  = 0.85f;  ///< 0 = uniform splits, 1 = logarithmic.
         bool     shadowDebug        = false;  ///< Tint fragments by cascade for debugging.
@@ -659,6 +690,10 @@ namespace kemena
         uint32_t shadowTexArray     = 0;      ///< GL_TEXTURE_2D_ARRAY depth texture.
         kMat4    lightSpaceMatrices[kMaxShadowCascades]; ///< Per-cascade light projection*view matrices.
         float    cascadeSplits[kMaxShadowCascades] = {}; ///< Per-cascade far-plane split distances.
+        // Appended after the existing members so the offsets of the shadow-map
+        // state above stay stable for code built against the previous header.
+        int      terrainShadowResolution = 0;   ///< Terrain-driven override (0 = none).
+        int      allocatedShadowResolution = 0; ///< Size of shadowTexArray.
 
         // Picking FBO
         bool enablePicking = false; ///< True when color-ID object picking is active.

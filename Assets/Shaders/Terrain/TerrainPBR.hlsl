@@ -152,6 +152,8 @@ SamplerComparisonState s_Shadow  : register(s1);
 float u_Tiling[4];
 float u_MaskChannel[4]; // Per-layer splat-mask channel (0..3 = R/G/B/A)
 float u_BlendSharpness;
+float u_TileWorldSize;  // World size of one tile (for world-space UVs)
+float u_TerrainSampleSpacing; // Engine-derived world distance between height samples
 
 struct PS_INPUT
 {
@@ -195,16 +197,39 @@ bool csmProject(int layer, float3 wp, out float3 p)
     return p.z <= 1.0 && p.x >= 0.0 && p.x <= 1.0 && p.y >= 0.0 && p.y <= 1.0;
 }
 
+// World-space size of one terrain height sample (mirror of the GLSL helper).
+float terrainSampleWorld()
+{
+    float cell = u_TerrainSampleSpacing;
+    if (cell <= 0.0001)
+    {
+        float tileWorld = (u_TileWorldSize > 0.001) ? u_TileWorldSize : 256.0;
+        cell = tileWorld / 255.0;
+    }
+    return cell;
+}
+
+// Terrain-derived PCF step in shadow-map texels (mirror of the GLSL helper).
+float terrainShadowStep(int layer)
+{
+    float texelWorld = csmTexelWorld(layer);
+    float stepWorld  = terrainSampleWorld() * 0.5;
+    return (texelWorld > 0.0) ? clamp(stepWorld / texelWorld, 0.5, 16.0) : 1.0;
+}
+
 float csmPCF(int layer, float3 p, float bias)
 {
     uint w, h, elems;
     shadowMapArray.GetDimensions(0, w, h, elems);
-    float2 texel = (1.0 / float2(w, h)) * max(shadowSoftness, 0.5);
+
+    // 5x5 kernel — same tap layout as the scene's lit mesh shaders — with a
+    // terrain-derived step instead of the scene's softness setting.
+    float2 texel = (1.0 / float2(w, h)) * terrainShadowStep(layer);
     float s = 0.0;
-    for (int x = -1; x <= 1; x++)
-        for (int y = -1; y <= 1; y++)
+    for (int x = -2; x <= 2; x++)
+        for (int y = -2; y <= 2; y++)
             s += shadowMapArray.SampleCmpLevelZero(s_Shadow, float3(p.xy + float2(x, y) * texel, float(layer)), p.z - bias) ? 1.0 : 0.0;
-    return s / 9.0;
+    return s / 25.0;
 }
 
 float csmShadow(float3 wp, float3 n, float3 lightDir)
@@ -212,18 +237,34 @@ float csmShadow(float3 wp, float3 n, float3 lightDir)
     if (!enableShadow || !receiveShadow || cascadeCount <= 0) return 0.0;
     float3 l = normalize(-lightDir);
     float fd = abs(mul(viewMatrix, float4(wp, 1.0)).z);
-    int layer = cascadeCount - 1;
-    for (int i = 0; i < cascadeCount; i++)
-        if (fd < csmSplit(i)) { layer = i; break; }
-    // Normal-offset, then constant + slope-scaled depth bias.
-    float3 samplePos = wp + normalize(n) * (csmTexelWorld(layer) * shadowNormalOffset);
-    float bias = csmBias(n, l);
+
+    // Pick the highest-resolution cascade whose light-space box actually
+    // contains the receiver. View-depth split selection alone leaves large
+    // terrain fragments outside their selected cascade's map (so they return
+    // lit), and any stale/zero cascadeSplits would silently pin the whole tile
+    // to the coarse last layer. Testing the real projected bounds makes every
+    // cascade get used for the distance range it covers.
+    int layer = -1;
+    float3 samplePos = wp;
     float3 p;
-    if (!csmProject(layer, samplePos, p)) return 0.0;
+    for (int i = 0; i < cascadeCount; i++)
+    {
+        float3 candidate = wp + normalize(n) * (csmTexelWorld(i) * shadowNormalOffset);
+        if (csmProject(i, candidate, p))
+        {
+            layer = i;
+            samplePos = candidate;
+            break;
+        }
+    }
+    if (layer < 0) return 0.0;
+
+    // Constant + slope-scaled depth bias.
+    float bias = csmBias(n, l);
     float sh = csmPCF(layer, p, bias);
     float sf = csmSplit(layer);
     float band = sf * 0.1;
-    if (layer + 1 < cascadeCount && fd > sf - band)
+    if (layer + 1 < cascadeCount && sf > 0.0 && fd > sf - band)
     {
         float3 p2;
         if (csmProject(layer + 1, samplePos, p2))

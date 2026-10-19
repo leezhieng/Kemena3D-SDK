@@ -48,6 +48,9 @@ namespace kemena
         kString name;                  ///< Display name (e.g. "Grass", "Rock", "Snow").
         kMaterial *material = nullptr; ///< Material asset for this layer (owned externally).
         float tiling = 16.0f;          ///< Texture repeats across the tile (u_Tiling[layer]).
+        kVec2 uvOffset = kVec2(0.0f);  ///< UV offset in tiling space (u_UVOffsetX/Y[layer]).
+        bool rotateUV = false;         ///< Rotate each texture repeat cell for this layer.
+        float uvRotation = 0.0f;       ///< Per-layer UV rotation in radians (u_UVRotation[layer]).
         float tileSize = 1.0f;         ///< Legacy, unused; kept so old payloads still load.
         float minHeight = 0.0f;        ///< Minimum height (world units) where this layer appears.
         float maxHeight = 1.0f;        ///< Maximum height (world units) where this layer appears.
@@ -259,9 +262,16 @@ namespace kemena
          * @param strength  Brush opacity [0, 1]. 1.0 = full effect.
          * @param mode      Brush operation (Raise, Lower, Flatten, Smooth).
          * @param flattenTargetHeight  Heights are pulled toward this value in Flatten mode.
+         * @param sampleBaseAtWorld    Optional pre-stamp base-height sampler for
+         *        Smooth mode. It receives world XZ and must return the base height
+         *        from the shared pre-stroke snapshot, so a brush straddling two
+         *        tiles smooths both sides against exactly the same neighbour data.
+         *        May return NaN when the position is outside all tiles; the tile
+         *        then falls back to its own neighbour-aware edge sample.
          */
         void applyBrush(const kVec3 &worldPos, float radius, float strength,
-                        BrushMode mode, float flattenTargetHeight = 0.0f);
+                        BrushMode mode, float flattenTargetHeight = 0.0f,
+                        const std::function<float(float, float)> *sampleBaseAtWorld = nullptr);
 
         /**
          * @brief Converts a world-space position to the nearest heightmap coordinates.
@@ -590,6 +600,15 @@ namespace kemena
 
         /** @brief Returns the height sample at (x, z) with neighbor stitching applied. */
         float getStitchedHeight(int x, int z) const;
+
+        /**
+         * @brief Returns the *base* height at (x, z), crossing tile borders.
+         *
+         * Unlike getStitchedHeight(), this reads the sculpt/paint base field rather
+         * than the composite, which is what the smooth brush needs before modifier
+         * layers are folded back on top.
+         */
+        float getBaseHeightStitched(int x, int z) const;
 
         /**
          * @brief Composite height (base + modifier layers) at a sample, ignoring any

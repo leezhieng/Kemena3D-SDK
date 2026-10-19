@@ -959,6 +959,14 @@ namespace kemena
     {
         if (!physicsObject || isStatic) return;
 
+        // Static bodies never move in the simulation, so copying their transform
+        // back would undo an editor gizmo move made while the game is running.
+        // (A terrain tile's HeightField collider is static; without this check,
+        // moving the tile in the viewport snapped it straight back to the pose
+        // captured when Play started.) Dynamic and kinematic bodies still sync.
+        if (physicsObject->getObjectType() == kPhysicsObjectType::Static)
+            return;
+
         // The body transform is the object transform composed with the collider
         // offset (body = object * offset), so invert the offset to recover the
         // object transform from the simulated body transform.
