@@ -414,6 +414,11 @@ namespace kemena
         return out;
     }
 
+    int kPhysicsManager::getContactEventCount() const
+    {
+        return m_impl ? static_cast<int>(m_impl->contactEvents.size()) : 0;
+    }
+
     // -----------------------------------------------------------------------
     // World settings
     // -----------------------------------------------------------------------

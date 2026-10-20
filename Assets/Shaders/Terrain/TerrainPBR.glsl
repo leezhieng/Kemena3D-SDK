@@ -25,6 +25,7 @@ uniform mat4 normalMatrix;
 out vec3 v_worldPos;
 out vec3 v_color;
 out vec2 v_texCoord;
+out vec3 v_N;
 
 void main()
 {
@@ -33,6 +34,8 @@ void main()
     v_worldPos = worldPos.xyz;
     v_color    = vertexColor;
     v_texCoord = texCoord;
+    // Smooth per-vertex normal (a derivative normal is constant per triangle).
+    v_N        = normalize(mat3(normalMatrix) * vertexNormal);
 
     gl_Position = projectionMatrix * viewMatrix * worldPos;
 }
@@ -135,12 +138,18 @@ uniform float     u_TileWorldSize;     // World size of one tile (for world-spac
 // to scale the PCF footprint with the tile's size.
 uniform float     u_TerrainSampleSpacing;
 
+// Terrain self-shadow controls (directional lighting only; CSM stays on the
+// scene's own shadow settings).
+uniform float     u_TerrainShadowStrength;
+uniform float     u_TerrainShadowSoftness;
+
 // ===========================================================================
 // Varying inputs
 // ===========================================================================
 in vec3 v_worldPos;
 in vec3 v_color;
 in vec2 v_texCoord;
+in vec3 v_N;
 
 out vec4 fragColor;
 
@@ -207,9 +216,11 @@ float terrainShadowStep(int layer)
 
 float csmPCF(int layer, vec3 p, float bias)
 {
-    // 5x5 kernel — same tap layout as the scene's lit mesh shaders — with a
-    // terrain-derived step instead of the scene's softness setting.
-    vec2 ts = vec2(1.0 / max(shadowResolution, 1.0)) * terrainShadowStep(layer);
+    // 5x5 kernel — same tap layout as the scene's lit mesh shaders. The base
+    // step is terrain-derived, then scaled by the scene's softness setting
+    // (normalised to the 1.5 default so the historical look is preserved).
+    float softScale = clamp(shadowSoftness / 1.5, 0.1, 4.0);
+    vec2 ts = vec2(1.0 / max(shadowResolution, 1.0)) * terrainShadowStep(layer) * softScale;
     float s = 0.0;
     for (int x = -2; x <= 2; x++)
         for (int y = -2; y <= 2; y++)
@@ -291,6 +302,18 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Terrain directional (self) shading curve applied to the sun's N·L term.
+// (0, 0) reproduces plain N·L. Softness wraps the terminator; strength adds
+// contrast on slopes turning away from the sun. Independent of CSM.
+float terrainDirectNdotL(vec3 n, vec3 l)
+{
+    float ndl  = dot(n, l);
+    float wrap = clamp(u_TerrainShadowSoftness, 0.0, 0.95);
+    float softened = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    float contrast = mix(1.0, 2.5, clamp(u_TerrainShadowStrength, 0.0, 1.0));
+    return pow(softened, contrast);
+}
+
 vec3 calcPBR(vec3 albedo, float metallic, float roughness, vec3 F0,
              vec3 n, vec3 v, vec3 l, vec3 radiance)
 {
@@ -303,7 +326,7 @@ vec3 calcPBR(vec3 albedo, float metallic, float roughness, vec3 F0,
     vec3  F     = fresnelSchlick(max(dot(h, v), 0.0), F0);
     vec3  kD    = (1.0 - F) * (1.0 - metallic);
     vec3  spec  = NDF * G * F / (4.0 * NdotV * NdotL + 0.0001);
-    return (kD * albedo / PI + spec) * radiance * NdotL;
+    return (kD * albedo / PI + spec) * radiance * terrainDirectNdotL(n, l);
 }
 
 // Fresnel with a roughness-aware ceiling (see mesh_pbr.glsl).
@@ -423,9 +446,15 @@ void main()
         ao        = 1.0;
     }
 
-    // ----- Compute geometric normal from displaced world position -----------
-    // Using screen-space derivatives (dFdx/dFdy) — always valid, no TBN needed.
-    vec3 N = computeDisplacedNormal(v_worldPos);
+    // ----- Terrain normal ----------------------------------------------------
+    // Interpolate the smooth per-vertex normal; derivative normals are constant
+    // per triangle and produce faceted ("pixelated") self-shading on slopes.
+    vec3 N = v_N;
+    float nLen = length(N);
+    N = (nLen > 1e-5) ? N / nLen : computeDisplacedNormal(v_worldPos);
+
+    // Colour overlay: the material's diffuse colour tints the blended albedo.
+    albedo *= material.diffuse;
 
     // ----- PBR lighting -----------------------------------------------------
     vec3 v     = normalize(vec3(0.0) - v_worldPos); // view direction (toward camera)

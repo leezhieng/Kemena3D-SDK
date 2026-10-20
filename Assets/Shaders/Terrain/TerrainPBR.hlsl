@@ -154,6 +154,9 @@ float u_MaskChannel[4]; // Per-layer splat-mask channel (0..3 = R/G/B/A)
 float u_BlendSharpness;
 float u_TileWorldSize;  // World size of one tile (for world-space UVs)
 float u_TerrainSampleSpacing; // Engine-derived world distance between height samples
+// Terrain directional (self) shading controls. CSM keeps the scene's settings.
+float u_TerrainShadowStrength;
+float u_TerrainShadowSoftness;
 
 struct PS_INPUT
 {
@@ -222,9 +225,11 @@ float csmPCF(int layer, float3 p, float bias)
     uint w, h, elems;
     shadowMapArray.GetDimensions(0, w, h, elems);
 
-    // 5x5 kernel — same tap layout as the scene's lit mesh shaders — with a
-    // terrain-derived step instead of the scene's softness setting.
-    float2 texel = (1.0 / float2(w, h)) * terrainShadowStep(layer);
+    // 5x5 kernel — same tap layout as the scene's lit mesh shaders. The base
+    // step is terrain-derived, then scaled by the scene's softness setting
+    // (normalised to the 1.5 default so the historical look is preserved).
+    float softScale = clamp(shadowSoftness / 1.5, 0.1, 4.0);
+    float2 texel = (1.0 / float2(w, h)) * terrainShadowStep(layer) * softScale;
     float s = 0.0;
     for (int x = -2; x <= 2; x++)
         for (int y = -2; y <= 2; y++)
@@ -304,6 +309,18 @@ float3 fresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
+// Terrain directional (self) shading curve applied to the sun's N·L term.
+// (0, 0) reproduces plain N·L. Softness wraps the terminator; strength adds
+// contrast on slopes turning away from the sun. Independent of CSM.
+float terrainDirectNdotL(float3 n, float3 l)
+{
+    float ndl  = dot(n, l);
+    float wrap = clamp(u_TerrainShadowSoftness, 0.0, 0.95);
+    float softened = clamp((ndl + wrap) / (1.0 + wrap), 0.0, 1.0);
+    float contrast = lerp(1.0, 2.5, clamp(u_TerrainShadowStrength, 0.0, 1.0));
+    return pow(softened, contrast);
+}
+
 float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
                float3 n, float3 v, float3 l, float3 radiance)
 {
@@ -316,7 +333,7 @@ float3 calcPBR(float3 albedo, float metallic, float roughness, float3 F0,
     float3 F     = fresnelSchlick(max(dot(h, v), 0.0), F0);
     float3 kD    = (1.0 - F) * (1.0 - metallic);
     float3 spec  = NDF * G * F / (4.0 * NdotV * NdotL + 0.0001);
-    return (kD * albedo / PI + spec) * radiance * NdotL;
+    return (kD * albedo / PI + spec) * radiance * terrainDirectNdotL(n, l);
 }
 
 // Fresnel with a roughness-aware ceiling (see mesh_pbr.hlsl).
@@ -431,9 +448,14 @@ float4 mainPS(PS_INPUT input) : SV_TARGET
         ao        = 1.0;
     }
 
-    // Compute geometric normal from displaced world position.
-    // Using screen-space derivatives (ddx/ddy) — always valid, no TBN needed.
-    float3 N = computeDisplacedNormal(input.worldPos);
+    // Interpolate the smooth per-vertex normal (input.N). Derivative normals are
+    // constant per triangle and produce faceted ("pixelated") self-shading.
+    float3 N = input.N;
+    float nLen = length(N);
+    N = (nLen > 1e-5) ? N / nLen : computeDisplacedNormal(input.worldPos);
+
+    // Colour overlay: the material's diffuse colour tints the blended albedo.
+    albedo *= material.diffuse;
 
     // PBR lighting
     float3 v  = normalize(float3(0, 0, 0) - input.worldPos);

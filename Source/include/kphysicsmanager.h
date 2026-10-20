@@ -226,6 +226,14 @@ namespace kemena
          */
         std::vector<kPhysicsContactEvent> takeContactEvents();
 
+        /**
+         * @brief Number of contact events captured during the last update().
+         *
+         * Read-only peek for diagnostics; takeContactEvents() still consumes and
+         * clears the queue.
+         */
+        int getContactEventCount() const;
+
     protected:
     private:
         struct Impl;

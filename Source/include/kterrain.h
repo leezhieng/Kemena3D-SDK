@@ -110,7 +110,9 @@ namespace kemena
         int noiseOctaves = 4;          ///< fBm octave count.
         int noiseSeed = 42;            ///< Lattice seed.
         int noiseType = 0;             ///< 0 = fBm, 1 = ridged, 2 = billowed.
-        bool noiseAdditive = false;    ///< Add to the layer input instead of replacing it.
+        /// Deprecated and unused: noise is always additive now. Retained so
+        /// binaries compiled against the older header keep the struct layout.
+        bool noiseAdditive = true;
 
         // --- Erosion parameters -----------------------------------------------
         int droplets = 50000;          ///< Hydraulic droplet count.
@@ -204,6 +206,16 @@ namespace kemena
         /** @brief Returns the number of height samples per side. */
         int getHeightRes() const { return m_heightRes; }
 
+        /**
+         * @brief HeightField collider resolution (samples per side).
+         *
+         * Kept on the tile so a mesh rebuild (sculpt / effect-layer edit) can
+         * refresh the collider at the user's chosen resolution instead of
+         * falling back to a default.
+         */
+        int getCollisionResolution() const { return m_collisionResolution; }
+        void setCollisionResolution(int resolution) { m_collisionResolution = resolution; }
+
         /** @brief Returns the world-space position of the tile's corner (min X, min Z). */
         kVec3 getWorldPosition() const;
 
@@ -295,6 +307,19 @@ namespace kemena
          * @param value Height value.
          */
         void fillHeight(float value);
+
+        /**
+         * @brief Returns the tile's nominal base elevation.
+         *
+         * This is the elevation the tile's flat base field was created at (the
+         * panel's "Tile Height"). Sculpting and height layers move the samples
+         * relative to it, so changing the tile height translates the whole tile
+         * instead of flattening it.
+         */
+        float getTileHeight() const { return m_tileHeight; }
+
+        /** @brief Sets the nominal base elevation without touching the height field. */
+        void setTileHeight(float value) { m_tileHeight = value; }
 
         // --- Weight map (material blending, up to 16 layers) ---------------------
 
@@ -528,6 +553,17 @@ namespace kemena
         void updateMesh();
 
         /**
+         * @brief Rebuilds an existing HeightField collider's samples from the
+         *        current composite height field.
+         *
+         * The descriptor's stored @c heightSampleCount is kept, so sculpting or
+         * effect-layer edits refresh the collider geometry without resetting the
+         * user's collision resolution. No-op unless the mesh owns a HeightField
+         * physics descriptor.
+         */
+        void refreshHeightFieldCollider();
+
+        /**
          * @brief Fast update: uploads the current splat data to the GPU splat
          *        texture via glTexSubImage2D (no geometry changes).
          */
@@ -556,6 +592,21 @@ namespace kemena
 
         /** @brief Returns the neighbor tile in the given direction, or nullptr. */
         kTerrain *getNeighbor(const kString &direction) const;
+
+        /**
+         * @brief Morphs the borders of a freshly created tile into its neighbours.
+         *
+         * A new tile starts flat, so a single-row stitch leaves a one-sample cliff
+         * between the neighbour's sculpted edge and the flat interior. This copies
+         * each shared neighbour edge into the matching edge sample and ramps that
+         * height into the tile over @p bandSamples samples with a smoothstep
+         * falloff. The edge sample itself matches the neighbour exactly, so the
+         * later stitchSeams() average leaves the neighbour untouched.
+         *
+         * Intended for freshly filled tiles; calling it on an authored tile would
+         * flatten a band along every shared border.
+         */
+        void blendEdgesToNeighbors(int bandSamples);
 
         // --- Load / unload -------------------------------------------------------
 
@@ -649,6 +700,8 @@ namespace kemena
         float m_worldSize = 256.0f;
         int m_heightRes = 513;
         float m_sampleSpacing = 0.0f; ///< World-space distance between height samples.
+        float m_tileHeight = 0.0f;    ///< Nominal base elevation ("Tile Height").
+        int   m_collisionResolution = 129; ///< HeightField collider samples per side.
 
         std::vector<float> m_heightData;         ///< Composite height (base + modifier layers).
         std::vector<float> m_baseHeightData;     ///< Sculpted/painted base height (persisted).

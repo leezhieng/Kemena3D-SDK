@@ -80,6 +80,8 @@ uniform float u_TileWorldSize;
 // to scale the PCF footprint with the tile's size; terrain shadow resolution and
 // kernel are terrain-driven rather than copied from the scene's softness.
 uniform float u_TerrainSampleSpacing;
+// Terrain directional (self) shading controls. CSM stays on the scene settings.
+uniform float u_TerrainShadowStrength; uniform float u_TerrainShadowSoftness;
 in vec3 v_worldPos; in vec2 v_texCoord; in vec3 v_N;
 out vec4 fragColor;
 float csmSplit(int i) { if(i==0)return cascadeSplits.x; if(i==1)return cascadeSplits.y; if(i==2)return cascadeSplits.z; return cascadeSplits.w; }
@@ -103,9 +105,11 @@ float terrainShadowStep(int l) {
     return (texelWorld>0.0)?clamp(stepWorld/texelWorld,0.5,16.0):1.0;
 }
 float csmPCF(int l, vec3 p, float b) {
-    // 5x5 kernel — same tap layout as the lit mesh shaders — with a
-    // terrain-derived step instead of the scene's softness setting.
-    vec2 ts=(1.0/max(shadowResolution,1.0))*terrainShadowStep(l); float s=0.0;
+    // 5x5 kernel — same tap layout as the lit mesh shaders. The base step is
+    // terrain-derived, then scaled by the scene's softness setting (normalised
+    // to the 1.5 default so the historical look is preserved).
+    float softScale=clamp(shadowSoftness/1.5,0.1,4.0);
+    vec2 ts=(1.0/max(shadowResolution,1.0))*terrainShadowStep(l)*softScale; float s=0.0;
     for(int x=-2;x<=2;x++)for(int y=-2;y<=2;y++)s+=(p.z-b>texture(shadowMapArray,vec3(p.xy+vec2(x,y)*ts,l)).r)?1.0:0.0;
     return s/25.0;
 }
@@ -144,14 +148,21 @@ vec3 envBRDFApprox(vec3 sc,float r,float NoV){
     vec4 ir=r*c0+c1; float a=min(ir.x*ir.x,exp2(-9.28*NoV))*ir.x+ir.y;
     vec2 AB=vec2(-1.04,1.04)*a+ir.zw; return sc*AB.x+AB.y;
 }
+// Terrain directional (self) shading curve: (0,0) reproduces plain N·L.
+float terrainDirectNdotL(vec3 n,vec3 l){
+    float ndl=dot(n,l); float wrap=clamp(u_TerrainShadowSoftness,0.0,0.95);
+    float softened=clamp((ndl+wrap)/(1.0+wrap),0.0,1.0);
+    float contrast=mix(1.0,2.5,clamp(u_TerrainShadowStrength,0.0,1.0));
+    return pow(softened,contrast);
+}
 vec3 calcPBR(vec3 al,float met,float r,vec3 F0,vec3 n,vec3 v,vec3 l,vec3 rd){
     vec3 h=normalize(v+l); float NdotH=max(dot(n,h),0.0),NdotV=max(dot(n,v),0.0),NdotL=max(dot(n,l),0.0);
     float NDF=distGGX(NdotH,r),G=geoSmith(NdotV,NdotL,r);
     vec3 F=fresnelSchlick(max(dot(h,v),0.0),F0); vec3 kD=(1.0-F)*(1.0-met);
-    vec3 sp=NDF*G*F/(4.0*NdotV*NdotL+0.0001); return (kD*al/PI+sp)*rd*NdotL;
+    vec3 sp=NDF*G*F/(4.0*NdotV*NdotL+0.0001); return (kD*al/PI+sp)*rd*terrainDirectNdotL(n,l);
 }
 void main() {
-    vec3 albedo = material.diffuse; // default white
+    vec3 albedo = material.diffuse; // default white / colour overlay
     vec3 N = normalize(v_N);
     vec3 v = normalize(vec3(0.0)-v_worldPos);
     vec3 F0 = mix(vec3(0.04), albedo, material.metallic);
@@ -254,7 +265,6 @@ namespace kemena
         j["noiseOctaves"] = noiseOctaves;
         j["noiseSeed"] = noiseSeed;
         j["noiseType"] = noiseType;
-        j["noiseAdditive"] = noiseAdditive;
 
         j["droplets"] = droplets;
         j["erodeRadius"] = erodeRadius;
@@ -288,7 +298,6 @@ namespace kemena
         noiseOctaves = j.value("noiseOctaves", noiseOctaves);
         noiseSeed = j.value("noiseSeed", noiseSeed);
         noiseType = j.value("noiseType", noiseType);
-        noiseAdditive = j.value("noiseAdditive", noiseAdditive);
 
         droplets = j.value("droplets", droplets);
         erodeRadius = j.value("erodeRadius", erodeRadius);
@@ -782,6 +791,8 @@ namespace kemena
 
     void kTerrain::fillHeight(float value)
     {
+        // A freshly filled tile is flat at its nominal elevation.
+        m_tileHeight = value;
         std::fill(m_baseHeightData.begin(), m_baseHeightData.end(), value);
         recomposeHeight();
         if (m_loaded)
@@ -1358,6 +1369,11 @@ namespace kemena
             matJson["shader"] = "TerrainPBR";
             matJson["owned_by_terrain"] = true;
             matJson["world_size"] = m_worldSize;
+            // Nominal base elevation, so a later "Tile Height" apply can translate
+            // the sculpted field instead of flattening it.
+            matJson["tile_height"] = m_tileHeight;
+            // Collider resolution, kept here so mesh rebuilds retain it.
+            matJson["collision_resolution"] = m_collisionResolution;
 
             if (m_terrainMaterial)
             {
@@ -1524,6 +1540,12 @@ namespace kemena
                 }
                 file.close();
 
+                if (matJson.contains("tile_height") && matJson["tile_height"].is_number())
+                    m_tileHeight = matJson["tile_height"].get<float>();
+                if (matJson.contains("collision_resolution") &&
+                    matJson["collision_resolution"].is_number())
+                    m_collisionResolution = matJson["collision_resolution"].get<int>();
+
                 // Older terrain materials stored rotation globally in the
                 // params block. Read those values first so layers that predate
                 // per-layer UV transforms can inherit them below.
@@ -1571,6 +1593,14 @@ namespace kemena
                         // and rotation now live on each layer.
                         if (it.key() == "u_RotateUV" || it.key() == "u_UVRotation" ||
                             it.key() == "material.tiling")
+                            continue;
+                        // Legacy per-tile CSM overrides: CSM must follow the
+                        // scene's shadow settings, so never restore these.
+                        if (it.key() == "shadowBias" || it.key() == "shadowNormalBias" ||
+                            it.key() == "shadowNormalOffset")
+                            continue;
+                        // Removed terrain brightness/metallic overrides.
+                        if (it.key() == "u_TerrainBrightness" || it.key() == "u_TerrainMetallic")
                             continue;
                         const float v = it.value().get<float>();
                         // The tile's material is created by the first rebuildMesh(),
@@ -1728,6 +1758,89 @@ namespace kemena
             h += layer.offsets[i] * layer.weight;
         }
         return h;
+    }
+
+    void kTerrain::blendEdgesToNeighbors(int bandSamples)
+    {
+        const int res = m_heightRes;
+        if (res < 3 || bandSamples < 1 ||
+            m_baseHeightData.size() != static_cast<size_t>(res) * res)
+            return;
+
+        const int band = (std::min)(bandSamples, res - 1);
+        auto smooth = [](float t) { return t * t * (3.0f - 2.0f * t); };
+
+        // West neighbour: its east column ramps into our west band.
+        if (m_neighborWest && m_neighborWest->getHeightRes() == res &&
+            m_neighborWest->getHeightData())
+        {
+            const float *nb = m_neighborWest->getHeightData();
+            for (int i = 0; i < band; ++i)
+            {
+                const float w = smooth(1.0f - static_cast<float>(i) / static_cast<float>(band));
+                for (int z = 0; z < res; ++z)
+                {
+                    const float target = nb[static_cast<size_t>(z) * res + (res - 1)];
+                    const size_t di = static_cast<size_t>(z) * res + i;
+                    m_baseHeightData[di] += (target - m_baseHeightData[di]) * w;
+                }
+            }
+        }
+
+        // East neighbour: its west column ramps into our east band.
+        if (m_neighborEast && m_neighborEast->getHeightRes() == res &&
+            m_neighborEast->getHeightData())
+        {
+            const float *nb = m_neighborEast->getHeightData();
+            for (int i = 0; i < band; ++i)
+            {
+                const float w = smooth(1.0f - static_cast<float>(i) / static_cast<float>(band));
+                const int x = res - 1 - i;
+                for (int z = 0; z < res; ++z)
+                {
+                    const float target = nb[static_cast<size_t>(z) * res];
+                    const size_t di = static_cast<size_t>(z) * res + x;
+                    m_baseHeightData[di] += (target - m_baseHeightData[di]) * w;
+                }
+            }
+        }
+
+        // South neighbour: its north row ramps into our south band.
+        if (m_neighborSouth && m_neighborSouth->getHeightRes() == res &&
+            m_neighborSouth->getHeightData())
+        {
+            const float *nb = m_neighborSouth->getHeightData();
+            for (int i = 0; i < band; ++i)
+            {
+                const float w = smooth(1.0f - static_cast<float>(i) / static_cast<float>(band));
+                for (int x = 0; x < res; ++x)
+                {
+                    const float target = nb[static_cast<size_t>(res - 1) * res + x];
+                    const size_t di = static_cast<size_t>(i) * res + x;
+                    m_baseHeightData[di] += (target - m_baseHeightData[di]) * w;
+                }
+            }
+        }
+
+        // North neighbour: its south row ramps into our north band.
+        if (m_neighborNorth && m_neighborNorth->getHeightRes() == res &&
+            m_neighborNorth->getHeightData())
+        {
+            const float *nb = m_neighborNorth->getHeightData();
+            for (int i = 0; i < band; ++i)
+            {
+                const float w = smooth(1.0f - static_cast<float>(i) / static_cast<float>(band));
+                const int z = res - 1 - i;
+                for (int x = 0; x < res; ++x)
+                {
+                    const float target = nb[x];
+                    const size_t di = static_cast<size_t>(z) * res + x;
+                    m_baseHeightData[di] += (target - m_baseHeightData[di]) * w;
+                }
+            }
+        }
+
+        recomposeHeight();
     }
 
     void kTerrain::stitchSeams()
@@ -2001,6 +2114,11 @@ namespace kemena
         m_mesh->setHasPhysicsDesc(savedHasPhysics);
         if (savedHasPhysics)
             m_mesh->getPhysicsDesc() = savedPhysics;
+        // The collider samples were built from the previous geometry. Refresh
+        // them at the descriptor's own resolution so sculpting / effect-layer
+        // edits keep both the collider shape and the user's collision
+        // resolution in sync instead of leaving stale samples behind.
+        refreshHeightFieldCollider();
         m_mesh->setHasCharacterDesc(savedHasCharacter);
         if (savedHasCharacter)
             m_mesh->getCharacterDesc() = savedCharacter;
@@ -2080,7 +2198,10 @@ namespace kemena
             // Terrain shading model: 0 = Flat, 1 = Phong, 2 = PBR. PBR is the
             // historical look, so it stays the default for existing projects.
             m_terrainMaterial->setParamFloat("u_ShaderType", 2.0f);
-
+            // Directional (self) shading controls: 0 preserves the plain N·L
+            // look. CSM cast shadows continue to follow the scene's settings.
+            m_terrainMaterial->setParamFloat("u_TerrainShadowStrength", 0.0f);
+            m_terrainMaterial->setParamFloat("u_TerrainShadowSoftness", 0.0f);
             m_mesh->setMaterial(m_terrainMaterial, false);
         }
 
@@ -2251,6 +2372,64 @@ namespace kemena
             rebuildMesh(true);
     }
 
+    void kTerrain::refreshHeightFieldCollider()
+    {
+        if (!m_mesh || !m_mesh->getHasPhysicsDesc())
+            return;
+
+        kPhysicsObjectDesc &desc = m_mesh->getPhysicsDesc();
+        if (desc.shape.type != kPhysicsShapeType::HeightField)
+            return;
+
+        const int res = m_heightRes;
+        if (res < 2 || m_heightData.empty())
+            return;
+
+        // Keep the authored collision resolution (tile value if the descriptor
+        // does not carry a usable one); never silently fall back to the height
+        // grid, which would ignore the user's setting.
+        int target = desc.shape.heightSampleCount;
+        if (target < 2 || target > 4096)
+            target = m_collisionResolution;
+        target = (std::max)(2, (std::min)(target, 4096));
+        m_collisionResolution = target;
+
+        desc.shape.heightSamples.resize(static_cast<size_t>(target) * target);
+        for (int z = 0; z < target; ++z)
+        {
+            const float fz = (target > 1)
+                                 ? (static_cast<float>(z) / static_cast<float>(target - 1)) * (res - 1)
+                                 : 0.0f;
+            const int z0 = static_cast<int>(fz);
+            const int z1 = (std::min)(z0 + 1, res - 1);
+            const float tz = fz - static_cast<float>(z0);
+            for (int x = 0; x < target; ++x)
+            {
+                const float fx = (target > 1)
+                                     ? (static_cast<float>(x) / static_cast<float>(target - 1)) * (res - 1)
+                                     : 0.0f;
+                const int x0 = static_cast<int>(fx);
+                const int x1 = (std::min)(x0 + 1, res - 1);
+                const float tx = fx - static_cast<float>(x0);
+
+                const float h00 = m_heightData[static_cast<size_t>(z0) * res + x0];
+                const float h10 = m_heightData[static_cast<size_t>(z0) * res + x1];
+                const float h01 = m_heightData[static_cast<size_t>(z1) * res + x0];
+                const float h11 = m_heightData[static_cast<size_t>(z1) * res + x1];
+                const float h0 = h00 + (h10 - h00) * tx;
+                const float h1 = h01 + (h11 - h01) * tx;
+                desc.shape.heightSamples[static_cast<size_t>(z) * target + x] =
+                    h0 + (h1 - h0) * tz;
+            }
+        }
+
+        desc.shape.heightSampleCount = target;
+        const float world = m_worldSize;
+        const float spacing = world / static_cast<float>(target - 1);
+        desc.shape.heightScale = kVec3(spacing, 1.0f, spacing);
+        desc.shape.offset = kVec3(-world * 0.5f, 0.0f, -world * 0.5f);
+    }
+
     void kTerrain::updateMesh()
     {
         if (!m_mesh || !m_loaded)
@@ -2359,6 +2538,8 @@ namespace kemena
         j["gridZ"] = m_gridZ;
         j["worldSize"] = m_worldSize;
         j["heightRes"] = m_heightRes;
+        j["tileHeight"] = m_tileHeight;
+        j["collisionResolution"] = m_collisionResolution;
 
         json layersJson = json::array();
         for (const auto &layer : m_layers)
@@ -2399,6 +2580,10 @@ namespace kemena
             m_worldSize = j["worldSize"].get<float>();
         if (j.contains("heightRes"))
             m_heightRes = j["heightRes"].get<int>();
+        if (j.contains("tileHeight"))
+            m_tileHeight = j["tileHeight"].get<float>();
+        if (j.contains("collisionResolution"))
+            m_collisionResolution = j["collisionResolution"].get<int>();
 
         m_sampleSpacing = m_worldSize / static_cast<float>(m_heightRes - 1);
         const size_t pixels = static_cast<size_t>(m_heightRes) * m_heightRes;

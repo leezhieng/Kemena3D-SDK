@@ -262,6 +262,9 @@ namespace kemena
         /** @brief Whether a named parameter exists. */
         bool hasParam(const kString &name) const { return params.find(name) != params.end(); }
 
+        /** @brief Removes a named parameter if present. */
+        void removeParam(const kString &name) { params.erase(name); }
+
         /** @brief Removes all dynamic parameters. */
         void clearParams() { params.clear(); }
 
