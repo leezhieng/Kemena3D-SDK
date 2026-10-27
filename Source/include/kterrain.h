@@ -51,6 +51,34 @@ namespace kemena
         kVec2 uvOffset = kVec2(0.0f);  ///< UV offset in tiling space (u_UVOffsetX/Y[layer]).
         bool rotateUV = false;         ///< Rotate each texture repeat cell for this layer.
         float uvRotation = 0.0f;       ///< Per-layer UV rotation in radians (u_UVRotation[layer]).
+
+        // --- Per-layer anti-tiling / projection ------------------------------
+        /// Stochastic anti-tiling for this layer: rotates every texture repeat
+        /// by a per-cell random angle so identical patches stop lining up.
+        /// Replaces the old material-wide control, so each layer can opt in.
+        bool stochastic = false;
+        /// Triplanar projection for this layer on steep slopes. Replaces the old
+        /// material-wide triplanar controls, so every layer can choose its own.
+        bool triplanar = false;
+        float triplanarStrength = 1.0f; ///< Blend amount on cliffs (0..1).
+        float triplanarSharpness = 3.0f;///< Slope threshold ramp (0.25..16).
+
+        /// Cell bombing: random per-repeat-cell offset/zoom that breaks the
+        /// visible repetition of the tiled texture (0 = off, 1 = full).
+        float cellBombing = 0.0f;
+        float cellBombingScale = 1.0f;  ///< Relative size of the jitter cells.
+
+        /// Voronoi UV warp: distorts the UV grid using a Voronoi feature field
+        /// (0 = off, 1 = full), with its own frequency.
+        float voronoiStrength = 0.0f;
+        float voronoiScale = 1.0f;
+
+        /// Parallax occlusion mapping. The layer's albedo luminance acts as the
+        /// height field (terrain layer textures carry no dedicated height map),
+        /// so POM adds apparent depth to dark/light detail. 0 = off.
+        float parallaxStrength = 0.0f;
+        float parallaxScale = 0.1f;    ///< UV offset depth at full strength.
+
         float tileSize = 1.0f;         ///< Legacy, unused; kept so old payloads still load.
         float minHeight = 0.0f;        ///< Minimum height (world units) where this layer appears.
         float maxHeight = 1.0f;        ///< Maximum height (world units) where this layer appears.
@@ -395,11 +423,12 @@ namespace kemena
         void syncLayerMaskChannels();
 
         /**
-         * @brief Uploads each material layer's own tiling to `u_Tiling[0..15]`.
+         * @brief Uploads every per-layer UV / projection parameter.
          *
-         * Tiling is a per-layer property (@ref kTerrainLayer::tiling), so call this
-         * after editing a layer's tiling or after adding a layer. Layers that do not
-         * exist keep the material's default of 16 repeats.
+         * Writes `u_Tiling`, `u_UVOffsetX/Y`, `u_RotateUV`, `u_UVRotation`, the
+         * per-layer triplanar controls and the cell-bombing / Voronoi anti-tiling
+         * controls for all 16 slots. Call after editing any of those properties or
+         * after adding a layer. Missing layers keep neutral defaults.
          */
         void syncLayerTiling();
 
@@ -533,13 +562,14 @@ namespace kemena
          * from geometry, and uploads to GPU.  No height map texture or vertex
          * shader displacement is used — the polygon data carries the height.
          *
-         * @param stitchNeighbors If true, the west/south boundary samples are
-         *        taken from the matching neighbor tile so adjacent tiles share
-         *        exactly the same edge positions (watertight seams). The rule is
-         *        one-directional and deterministic (a tile copies from its
-         *        west/south neighbor, its east/north edges keep their own
-         *        values), which makes every shared edge — corners included —
-         *        evaluate to the same value on both sides.
+         * @param stitchNeighbors If true, every shared boundary — west, east,
+         *        south and north, plus the corners where four tiles meet — is
+         *        averaged with the matching neighbour tile(s), so adjacent tiles
+         *        share exactly the same edge positions (watertight seams). The
+         *        result is symmetric (both sides of a seam agree, whichever tile
+         *        rebuilds first) and idempotent, and it also equalises the
+         *        matching height-modifier layers so effect layers do not crease
+         *        on a tile border. See stitchSeams().
          */
         void rebuildMesh(bool stitchNeighbors = true);
 
@@ -669,12 +699,20 @@ namespace kemena
         float rawCompositeHeight(int x, int z) const;
 
         /**
-         * @brief Makes this tile's west/south boundary samples match its neighbors.
+         * @brief Makes this tile's boundary samples match every existing neighbor.
          *
-         * Only west and south boundaries are written (the east/north edges keep
-         * their own data), so both tiles of a shared edge compute the identical
-         * value no matter which one rebuilds first. With no neighbor the edge keeps
-         * its own value.
+         * All four directions are stitched (west, east, south, north): each shared
+         * edge is averaged on both sides, so the result does not depend on which
+         * tile rebuilds first. Corners — where up to four tiles meet — are
+         * averaged across the whole 2x2 block, because two edge passes write the
+         * same corner sample and the last one would otherwise win.
+         *
+         * Both the rendered (composite) height and every matching height-modifier
+         * layer's delta are made equal across a seam, so noise/erosion layers do
+         * not crease on a tile border. The difference is folded into each tile's
+         * sculpted base field so it survives recomposeHeight() and serialization,
+         * and the operation is idempotent (averaging equal values changes nothing).
+         * With no neighbor the edge keeps its own value.
          */
         void stitchSeams();
 

@@ -152,7 +152,8 @@ vec3 envBRDFApprox(vec3 sc,float r,float NoV){
 float terrainDirectNdotL(vec3 n,vec3 l){
     float ndl=dot(n,l); float wrap=clamp(u_TerrainShadowSoftness,0.0,0.95);
     float softened=clamp((ndl+wrap)/(1.0+wrap),0.0,1.0);
-    float contrast=mix(1.0,2.5,clamp(u_TerrainShadowStrength,0.0,1.0));
+    // Strength is authored 0..2 (1.0 = historical 2.5 contrast).
+    float contrast=1.0+clamp(u_TerrainShadowStrength,0.0,2.0)*1.5;
     return pow(softened,contrast);
 }
 vec3 calcPBR(vec3 al,float met,float r,vec3 F0,vec3 n,vec3 v,vec3 l,vec3 rd){
@@ -199,6 +200,16 @@ namespace kemena
         j["uvOffset"] = {{"x", uvOffset.x}, {"y", uvOffset.y}};
         j["rotateUV"] = rotateUV;
         j["uvRotation"] = uvRotation;
+        j["stochastic"] = stochastic;
+        j["triplanar"] = triplanar;
+        j["triplanarStrength"] = triplanarStrength;
+        j["triplanarSharpness"] = triplanarSharpness;
+        j["cellBombing"] = cellBombing;
+        j["cellBombingScale"] = cellBombingScale;
+        j["voronoiStrength"] = voronoiStrength;
+        j["voronoiScale"] = voronoiScale;
+        j["parallaxStrength"] = parallaxStrength;
+        j["parallaxScale"] = parallaxScale;
         j["tileSize"] = tileSize;
         j["minHeight"] = minHeight;
         j["maxHeight"] = maxHeight;
@@ -227,6 +238,26 @@ namespace kemena
             rotateUV = j["rotateUV"].get<bool>();
         if (j.contains("uvRotation"))
             uvRotation = j["uvRotation"].get<float>();
+        if (j.contains("stochastic"))
+            stochastic = j["stochastic"].get<bool>();
+        if (j.contains("triplanar"))
+            triplanar = j["triplanar"].get<bool>();
+        if (j.contains("triplanarStrength"))
+            triplanarStrength = j["triplanarStrength"].get<float>();
+        if (j.contains("triplanarSharpness"))
+            triplanarSharpness = j["triplanarSharpness"].get<float>();
+        if (j.contains("cellBombing"))
+            cellBombing = j["cellBombing"].get<float>();
+        if (j.contains("cellBombingScale"))
+            cellBombingScale = j["cellBombingScale"].get<float>();
+        if (j.contains("voronoiStrength"))
+            voronoiStrength = j["voronoiStrength"].get<float>();
+        if (j.contains("voronoiScale"))
+            voronoiScale = j["voronoiScale"].get<float>();
+        if (j.contains("parallaxStrength"))
+            parallaxStrength = j["parallaxStrength"].get<float>();
+        if (j.contains("parallaxScale"))
+            parallaxScale = j["parallaxScale"].get<float>();
         if (j.contains("tileSize"))
             tileSize = j["tileSize"].get<float>();
         if (j.contains("minHeight"))
@@ -557,20 +588,41 @@ namespace kemena
 
         for (int l = 0; l < kMaxTerrainLayers; ++l)
         {
-            // Tiling is authored per material layer, so each slot uploads its own
-            // repeat count; layers that do not exist keep 16 (the historical
-            // default) so the shader's texture lookups stay valid.
+            // Every UV / projection property is authored per material layer, so
+            // each slot uploads its own values; layers that do not exist keep
+            // neutral defaults so the shader's texture lookups stay valid.
             float tiling = 16.0f;
             kVec2 offset(0.0f);
             bool rotateUV = false;
             float uvRotation = 0.0f;
+            bool stochastic = false;
+            bool triplanar = false;
+            float triplanarStrength = 1.0f;
+            float triplanarSharpness = 3.0f;
+            float cellBombing = 0.0f;
+            float cellBombingScale = 1.0f;
+            float voronoiStrength = 0.0f;
+            float voronoiScale = 1.0f;
+            float parallaxStrength = 0.0f;
+            float parallaxScale = 0.1f;
             if (l < static_cast<int>(m_layers.size()))
             {
-                if (m_layers[l].tiling > 0.0f)
-                    tiling = m_layers[l].tiling;
-                offset = m_layers[l].uvOffset;
-                rotateUV = m_layers[l].rotateUV;
-                uvRotation = m_layers[l].uvRotation;
+                const kTerrainLayer &layer = m_layers[l];
+                if (layer.tiling > 0.0f)
+                    tiling = layer.tiling;
+                offset = layer.uvOffset;
+                rotateUV = layer.rotateUV;
+                uvRotation = layer.uvRotation;
+                stochastic = layer.stochastic;
+                triplanar = layer.triplanar;
+                triplanarStrength = layer.triplanarStrength;
+                triplanarSharpness = layer.triplanarSharpness;
+                cellBombing = layer.cellBombing;
+                cellBombingScale = layer.cellBombingScale;
+                voronoiStrength = layer.voronoiStrength;
+                voronoiScale = layer.voronoiScale;
+                parallaxStrength = layer.parallaxStrength;
+                parallaxScale = layer.parallaxScale;
             }
             const kString idx = std::to_string(l);
             mat->setParamFloat("u_Tiling[" + idx + "]", tiling);
@@ -578,6 +630,16 @@ namespace kemena
             mat->setParamFloat("u_UVOffsetY[" + idx + "]", offset.y);
             mat->setParamFloat("u_RotateUV[" + idx + "]", rotateUV ? 1.0f : 0.0f);
             mat->setParamFloat("u_UVRotation[" + idx + "]", uvRotation);
+            mat->setParamFloat("u_LayerStochastic[" + idx + "]", stochastic ? 1.0f : 0.0f);
+            mat->setParamFloat("u_LayerTriplanar[" + idx + "]", triplanar ? 1.0f : 0.0f);
+            mat->setParamFloat("u_LayerTriplanarStrength[" + idx + "]", triplanarStrength);
+            mat->setParamFloat("u_LayerTriplanarSharpness[" + idx + "]", triplanarSharpness);
+            mat->setParamFloat("u_CellBombing[" + idx + "]", cellBombing);
+            mat->setParamFloat("u_CellBombingScale[" + idx + "]", cellBombingScale);
+            mat->setParamFloat("u_VoronoiStrength[" + idx + "]", voronoiStrength);
+            mat->setParamFloat("u_VoronoiScale[" + idx + "]", voronoiScale);
+            mat->setParamFloat("u_ParallaxStrength[" + idx + "]", parallaxStrength);
+            mat->setParamFloat("u_ParallaxScale[" + idx + "]", parallaxScale);
         }
     }
 
@@ -762,6 +824,15 @@ namespace kemena
                 float falloff = std::cos(t * 3.14159265358979323846f * 0.5f);
                 falloff *= strength * (std::max)(radius * 0.5f, m_sampleSpacing);
 
+                // Raise/Lower use `falloff` as a world-space displacement, but
+                // Flatten and Smooth use it as a *blend weight*. With a wide brush
+                // (radius * 0.5 * strength > 1) that weight exceeded 1, so each
+                // stamp flipped past the target/smoothed value and the field
+                // diverged — the "vertices shoot to extreme heights when
+                // smoothing/flattening a tile edge" bug. A blend weight must stay
+                // in [0, 1].
+                const float blend = (std::max)(0.0f, (std::min)(falloff, 1.0f));
+
                 float oldVal = m_baseHeightData[z * m_heightRes + x];
                 float newVal = oldVal;
 
@@ -774,10 +845,10 @@ namespace kemena
                     newVal = oldVal - falloff;
                     break;
                 case BrushMode::Flatten:
-                    newVal = oldVal + (flattenTargetHeight - oldVal) * falloff;
+                    newVal = oldVal + (flattenTargetHeight - oldVal) * blend;
                     break;
                 case BrushMode::Smooth:
-                    newVal = oldVal + (smoothed[z * m_heightRes + x] - oldVal) * falloff;
+                    newVal = oldVal + (smoothed[z * m_heightRes + x] - oldVal) * blend;
                     break;
                 }
 
@@ -1863,45 +1934,186 @@ namespace kemena
         if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
             m_neighborSouth->stitchSeams();
 
-        // Set one edge sample on both sides of a seam to the same composite
-        // height, and fold the difference into the base field so the result
-        // survives the next recomposeHeight()/serialization.
-        auto setCompositeEdge = [res](kTerrain *tile, int x, int z, float target)
+        // One sample of one tile inside a seam.
+        struct SeamSample
         {
-            const size_t i = static_cast<size_t>(z) * res + x;
-            const float contribution = tile->rawCompositeHeight(x, z) -
-                                       tile->m_baseHeightData[i];
-            tile->m_baseHeightData[i] = target - contribution;
-            tile->m_heightData[i] = target;
+            kTerrain *tile;
+            int x;
+            int z;
+            size_t index;
         };
 
-        // West/east seam: average both tiles' edge polygons and write the
-        // average back to *both* sides. The old one-way copy left the existing
-        // tile and the newly-added neighbour disagreeing until a reload.
-        if (m_neighborWest && m_neighborWest->getHeightRes() == res)
+        auto sample = [res](kTerrain *t, int x, int z) -> SeamSample
+        {
+            return SeamSample{t, x, z, static_cast<size_t>(z) * res + x};
+        };
+
+        // Makes every listed sample agree, on *both* sides of every seam that
+        // meets there:
+        //  1. the rendered (composite) height, and
+        //  2. each effect layer's delta — the base used to be matching while a
+        //     noise/erosion layer still creased exactly on the border, because
+        //     each tile carries its own generated relief.
+        // The leftover is folded into each tile's sculpted base so the agreement
+        // survives recomposeHeight() and serialization. Averaging equal values
+        // returns the same value, so repeated calls cannot drift.
+        auto stitchSamples = [](SeamSample *s, int count)
+        {
+            if (count <= 0)
+                return;
+
+            float target = 0.0f;
+            for (int i = 0; i < count; ++i)
+                target += s[i].tile->rawCompositeHeight(s[i].x, s[i].z);
+            target /= static_cast<float>(count);
+
+            // Effect layers: only when every participant carries the same stack
+            // (same count and same layer kind at each index), so unrelated
+            // operators are never averaged together.
+            const size_t layerCount = s[0].tile->m_heightLayers.size();
+            bool sameStack = (layerCount > 0);
+            for (int i = 0; i < count && sameStack; ++i)
+            {
+                const kTerrain *t = s[i].tile;
+                if (t->m_heightLayers.size() != layerCount ||
+                    t->m_baseHeightData.size() != static_cast<size_t>(t->m_heightRes) * t->m_heightRes)
+                    sameStack = false;
+            }
+            for (size_t l = 0; l < layerCount && sameStack; ++l)
+            {
+                const kTerrainHeightLayerType refType = s[0].tile->m_heightLayers[l].type;
+                for (int i = 1; i < count && sameStack; ++i)
+                {
+                    const kTerrainHeightLayer &lay = s[i].tile->m_heightLayers[l];
+                    if (lay.type != refType ||
+                        lay.offsets.size() != s[i].tile->m_baseHeightData.size())
+                        sameStack = false;
+                }
+                if (s[0].tile->m_heightLayers[l].offsets.size() !=
+                    s[0].tile->m_baseHeightData.size())
+                    sameStack = false;
+            }
+            if (sameStack)
+            {
+                for (size_t l = 0; l < layerCount; ++l)
+                {
+                    float avg = 0.0f;
+                    for (int i = 0; i < count; ++i)
+                        avg += s[i].tile->m_heightLayers[l].offsets[s[i].index];
+                    avg /= static_cast<float>(count);
+                    for (int i = 0; i < count; ++i)
+                        s[i].tile->m_heightLayers[l].offsets[s[i].index] = avg;
+                }
+            }
+
+            // Fold the residual into each tile's sculpted base so the composite
+            // comes out exactly `target` (and stays there after a recompose).
+            for (int i = 0; i < count; ++i)
+            {
+                kTerrain *t = s[i].tile;
+                const float layerSum = t->rawCompositeHeight(s[i].x, s[i].z) -
+                                       t->m_baseHeightData[s[i].index];
+                t->m_baseHeightData[s[i].index] = target - layerSum;
+                t->m_heightData[s[i].index] = target;
+            }
+        };
+
+        const auto usable = [res](const kTerrain *t)
+        { return t != nullptr && t->getHeightRes() == res; };
+
+        kTerrain *const west = usable(m_neighborWest) ? m_neighborWest : nullptr;
+        kTerrain *const east = usable(m_neighborEast) ? m_neighborEast : nullptr;
+        kTerrain *const south = usable(m_neighborSouth) ? m_neighborSouth : nullptr;
+        kTerrain *const north = usable(m_neighborNorth) ? m_neighborNorth : nullptr;
+
+        // --- X seams (west / east) -------------------------------------------
+        // Border samples are duplicated across tiles, so this tile's x=0 coincides
+        // with the west neighbour's x=res-1 and x=res-1 with the east one's x=0.
+        if (west != nullptr)
         {
             for (int z = 0; z < res; ++z)
             {
-                const float a = rawCompositeHeight(0, z);
-                const float b = m_neighborWest->rawCompositeHeight(res - 1, z);
-                const float avg = (a + b) * 0.5f;
-                setCompositeEdge(this, 0, z, avg);
-                setCompositeEdge(m_neighborWest, res - 1, z, avg);
+                SeamSample pair[2] = {sample(this, 0, z), sample(west, res - 1, z)};
+                stitchSamples(pair, 2);
+            }
+        }
+        if (east != nullptr)
+        {
+            for (int z = 0; z < res; ++z)
+            {
+                SeamSample pair[2] = {sample(this, res - 1, z), sample(east, 0, z)};
+                stitchSamples(pair, 2);
             }
         }
 
-        // South/north seam: same bidirectional average.
-        if (m_neighborSouth && m_neighborSouth->getHeightRes() == res)
+        // --- Z seams (south / north) -----------------------------------------
+        // The old code paired this tile's z=res-1 with the *south* neighbour's
+        // z=0 — two edges a whole tile apart — which is why the Z axis never
+        // stitched. The shared border is this z=0 <-> south z=res-1, and
+        // this z=res-1 <-> north z=0.
+        if (south != nullptr)
         {
             for (int x = 0; x < res; ++x)
             {
-                const float a = rawCompositeHeight(x, res - 1);
-                const float b = m_neighborSouth->rawCompositeHeight(x, 0);
-                const float avg = (a + b) * 0.5f;
-                setCompositeEdge(this, x, res - 1, avg);
-                setCompositeEdge(m_neighborSouth, x, 0, avg);
+                SeamSample pair[2] = {sample(this, x, 0), sample(south, x, res - 1)};
+                stitchSamples(pair, 2);
             }
         }
+        if (north != nullptr)
+        {
+            for (int x = 0; x < res; ++x)
+            {
+                SeamSample pair[2] = {sample(this, x, res - 1), sample(north, x, 0)};
+                stitchSamples(pair, 2);
+            }
+        }
+
+        // --- Corners ----------------------------------------------------------
+        // Up to four tiles meet at a corner and each edge pass above wants its own
+        // value there, so average the whole 2x2 block; otherwise the last edge
+        // written wins and the corner tears.
+        auto stitchCorner = [&](kTerrain *a, int ax, int az,
+                                kTerrain *b, int bx, int bz,
+                                kTerrain *c, int cx, int cz,
+                                kTerrain *d, int dx, int dz)
+        {
+            SeamSample quad[4];
+            int n = 0;
+            if (a != nullptr) quad[n++] = sample(a, ax, az);
+            if (b != nullptr) quad[n++] = sample(b, bx, bz);
+            if (c != nullptr) quad[n++] = sample(c, cx, cz);
+            if (d != nullptr) quad[n++] = sample(d, dx, dz);
+            stitchSamples(quad, n);
+        };
+
+        const auto diag = [res](kTerrain *side, bool northSide) -> kTerrain *
+        {
+            if (side == nullptr)
+                return nullptr;
+            kTerrain *d = northSide ? side->m_neighborNorth : side->m_neighborSouth;
+            return (d != nullptr && d->getHeightRes() == res) ? d : nullptr;
+        };
+
+        // this(0,0) + west(res-1,0) + south(0,res-1) + west-south(res-1,res-1)
+        stitchCorner(this, 0, 0,
+                     west, res - 1, 0,
+                     south, 0, res - 1,
+                     diag(west, false), res - 1, res - 1);
+        // this(0,res-1) + west(res-1,res-1) + north(0,0) + west-north(res-1,0)
+        stitchCorner(this, 0, res - 1,
+                     west, res - 1, res - 1,
+                     north, 0, 0,
+                     diag(west, true), res - 1, 0);
+        // this(res-1,0) + east(0,0) + south(res-1,res-1) + east-south(0,res-1)
+        stitchCorner(this, res - 1, 0,
+                     east, 0, 0,
+                     south, res - 1, res - 1,
+                     diag(east, false), 0, res - 1);
+        // this(res-1,res-1) + east(0,res-1) + north(res-1,0) + east-north(0,0)
+        stitchCorner(this, res - 1, res - 1,
+                     east, 0, res - 1,
+                     north, res - 1, 0,
+                     diag(east, true), 0, 0);
 
         m_stitching = false;
     }
@@ -2018,8 +2230,9 @@ namespace kemena
         }
 
         // Share the boundary samples with the adjacent tiles before generating the
-        // grid: the west/south edges take the neighbour's values, so both meshes
-        // produce identical positions along a shared border (watertight seam).
+        // grid: every seam (west/east/south/north and the corners) is averaged on
+        // both sides, so neighbouring meshes produce identical positions along a
+        // shared border (watertight seam) and their effect layers agree there.
         if (stitchNeighbors)
             stitchSeams();
 
@@ -2180,12 +2393,10 @@ namespace kemena
                 m_terrainMaterial->setParamFloat("u_Tiling[" + std::to_string(li) + "]", 16.0f);
             m_terrainMaterial->setParamFloat("u_BlendSharpness", 1.0f);
             m_terrainMaterial->setParamFloat("u_TileWorldSize", m_worldSize);
-            // Stochastic anti-tiling, rotate-UV and triplanar are all opt-in: a
-            // freshly created terrain renders with plain, stable UVs.
-            m_terrainMaterial->setParamFloat("u_Stochastic", 0.0f);
-            m_terrainMaterial->setParamFloat("u_Triplanar", 0.0f);
-            m_terrainMaterial->setParamFloat("u_TriplanarStrength", 0.75f);
-            m_terrainMaterial->setParamFloat("u_TriplanarSharpness", 3.0f);
+            // Stochastic anti-tiling, rotate-UV, triplanar, cell bombing and the
+            // Voronoi warp are all opt-in and per material layer (uploaded by
+            // syncLayerTiling below), so a freshly created terrain renders with
+            // plain, stable UVs.
             m_terrainMaterial->setParamFloat("u_RotateUV", 0.0f);
             m_terrainMaterial->setParamFloat("u_UVRotation", 0.0f);
             // No noise variegation out of the box: until the operator assigns
